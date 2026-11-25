@@ -1,0 +1,15 @@
+{
+  "name": "context-flow",
+  "owner": {
+    "name": "context-flow"
+  },
+  "description": "Context Flow: see how context moves between coding-agent sessions, and move it yourself.",
+  "plugins": [
+    {
+      "name": "context-flow",
+      "source": "./context-flow",
+      "description": "Pieces picked on the Context Flow screen go along with the next prompt of the session they were set for. Does nothing for a session no piece is waiting for.",
+      "version": "0.1.1"
+    }
+  ]
+}

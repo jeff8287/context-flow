@@ -1,0 +1,16 @@
+{
+  "description": "Context Flow: when something is said to a session, the pieces set to wait for that session go along with it.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/along.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

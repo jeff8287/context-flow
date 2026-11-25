@@ -1,0 +1,27 @@
+{
+  "name": "context-flow",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "scan": "node --disable-warning=ExperimentalWarning packages/core/src/cli.ts scan",
+    "serve": "node --disable-warning=ExperimentalWarning packages/core/src/cli.ts serve",
+    "export": "node --disable-warning=ExperimentalWarning packages/core/src/cli.ts export",
+    "service": "node --disable-warning=ExperimentalWarning packages/core/src/cli.ts service",
+    "test": "node --disable-warning=ExperimentalWarning --test packages/core/test/*.test.ts packages/web/test/*.test.ts demo/*.test.ts",
+    "check": "tsc -p packages/core --noEmit && tsc -p packages/web --noEmit && tsc -p demo --noEmit",
+    "build": "npm run build -w @context-flow/web",
+    "demo": "npm run build && node --disable-warning=ExperimentalWarning demo/run.ts",
+    "demo:say": "node --disable-warning=ExperimentalWarning demo/agent.ts say"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0"
+  }
+}

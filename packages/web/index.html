@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>맥락 흐름</title>
+</head>
+<body>
+<div id="app">
+  <aside id="side" aria-label="세션 목록">
+    <header class="side-head">
+      <b class="brand">맥락 흐름</b>
+      <button id="io" class="icon" title="내보내기와 불러오기" aria-label="내보내기와 불러오기"></button>
+      <button id="refresh" class="icon" title="기록 다시 읽기" aria-label="기록 다시 읽기"></button>
+      <button id="theme" class="icon" title="밝게 또는 어둡게" aria-label="밝게 또는 어둡게"></button>
+    </header>
+    <div id="io-menu" hidden>
+      <div id="io-what"></div>
+      <button id="export-html" title="화면과 기록이 한 파일에 들어갑니다. 받은 사람은 두 번 눌러 열기만 하면 됩니다">화면 파일로 내보내기 (.html)</button>
+      <button id="export-json" title="기록만 든 파일입니다. 이 도구의 ‘묶음 파일 열기’로 엽니다">묶음 파일로 내보내기 (.json)</button>
+      <label id="mask-row" title="내보내는 파일에서 이 컴퓨터 사용자의 이름(홈 폴더 이름)을 글과 경로 어디에 있든 같은 글자 수의 ‘•’로 가립니다. 화면에 보이는 기록은 바뀌지 않습니다"><input id="mask" type="checkbox"><span>내 이름 가리고 내보내기</span></label>
+      <input id="mask-words" type="text" placeholder="더 가릴 낱말 (쉼표로 나눔)" aria-label="더 가릴 낱말" hidden>
+      <button id="import" title="내보낸 묶음 파일(.json)을 이 화면에서 엽니다. 읽기만 합니다">묶음 파일 열기…</button>
+      <input id="bundle-file" type="file" accept=".json,application/json" hidden>
+    </div>
+    <button id="project" aria-haspopup="true" aria-expanded="false" aria-label="프로젝트 고르기"></button>
+    <div id="project-menu" hidden></div>
+    <div id="frozen" hidden></div>
+    <button id="new-session" title="이 프로젝트에 새 세션을 시작합니다. 담아 둔 조각을 붙여 시작할 수 있습니다"></button>
+    <input id="find" type="search" placeholder="세션 찾기" aria-label="세션 찾기">
+    <div class="side-tools">
+      <button id="only-active" title="작업 중인 세션과 거기 이어진 세션만 켭니다">작업 중인 것만</button>
+      <button id="all-off">모두 끄기</button>
+    </div>
+    <nav id="list" aria-label="세션"></nav>
+    <footer id="foot"></footer>
+  </aside>
+  <main id="main">
+    <div id="stage">
+      <div id="map"><div id="world"><svg id="links" aria-hidden="true"></svg></div></div>
+      <div id="empty" hidden>왼쪽 목록에서 세션을 누르면 여기에 올라옵니다</div>
+      <div class="float tl"><button id="side-toggle" class="icon" title="세션 목록 접기 또는 펴기" aria-label="세션 목록 접기 또는 펴기"></button><button id="new-float" class="icon" title="새 세션" aria-label="새 세션"></button></div>
+      <div class="float tr"><button id="lanes-toggle" class="chip-btn" title="켜 둔 세션이 언제 무엇을 했는지 펼칩니다"></button><button id="tidy" class="chip-btn" title="끌어 옮긴 세션을 제자리로 되돌립니다" hidden></button><button id="zoom-out" class="icon" title="멀리: 세션과 선만" aria-label="멀리 보기"></button><button id="zoom-in" class="icon" title="가까이: 마지막 요청과 넘어간 조각까지" aria-label="가까이 보기"></button><button id="fit" class="icon" title="한눈에 들어오게 맞추기" aria-label="한눈에 들어오게 맞추기"></button></div>
+      <div class="float bl" id="legend"></div>
+      <div id="peek" hidden></div>
+      <div id="offline" hidden role="status"><span>서버에 닿지 않습니다. 다시 잇는 중입니다.</span><code>npm run service -- status</code><button id="retry">지금 다시</button></div>
+    </div>
+    <section id="drawer" hidden aria-label="시간 흐름"><svg id="lanes"></svg></section>
+  </main>
+  <aside id="chat" hidden aria-label="대화와 맥락"></aside>
+  <div id="pick" hidden><button id="pick-hold" title="누르면 고른 글을 조각으로 담아 둡니다. 끌어서 지도의 세션에 놓으면 그 세션에 붙고, 빈 곳에 놓으면 새 세션을 시작합니다">담기</button><button id="pick-trace" title="고른 글이 어디서 왔고 어디로 갔는지 따라갑니다">역추적</button></div>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

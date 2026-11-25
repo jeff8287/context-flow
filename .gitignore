@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.DS_Store
+# the made-up records of the demo: made again each time it is started
+demo/home/
+demo/home-test-*/

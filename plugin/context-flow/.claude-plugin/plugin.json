@@ -1,0 +1,8 @@
+{
+  "name": "context-flow",
+  "version": "0.1.1",
+  "description": "Pieces picked on the Context Flow screen go along with the next prompt of the session they were set for. Does nothing for a session no piece is waiting for.",
+  "author": {
+    "name": "context-flow"
+  }
+}
