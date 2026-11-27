@@ -8,8 +8,8 @@
 //   uploads/<when>-<id>/<name>      the pictures and other files sent along with a message from the screen: the
 //                                   client is handed them from here, and the agent reads the others from here
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import type { Piece, Place, Transfer } from "./model.ts";
 import { HOME } from "./home.ts";
 
@@ -129,6 +129,19 @@ export interface Saved { path: string; name: string; type: string; image: boolea
 const PICTURES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 export const UPLOAD_ROOM = 10 * 1024 * 1024;
 export const UPLOAD_MOST = 8;
+
+/** A path as that of a file this tool kept to go with a message (uploads/), if it is one and the file is there;
+ *  null otherwise. A path is taken from a record, which anything may have written: only what lies in the tool's own
+ *  folder of such files is ever read by it and handed on, wherever a link in that folder may lead. */
+export function uploadedFile(path: string): string | null {
+  try {
+    const root = realpathSync(join(home(), "uploads"));
+    const real = realpathSync(path);
+    return real.startsWith(root + sep) && statSync(real).isFile() ? real : null;
+  } catch {
+    return null; // no such folder, or no such file
+  }
+}
 
 /** Keep the files that go with a message. dir: the folder they were put in, one for each message, or null when
  *  there were none. Throws with the reason when they are more or larger than is taken. */

@@ -12,12 +12,13 @@ import { answerBefore } from "./claude.ts";
 import { forkPoint, rolloutPathOf } from "./codex.ts";
 import { makeBundle, maskBundle, type Spot } from "./bundle.ts";
 import { freshPlan } from "./fresh.ts";
-import { filesNote, pieceBlock, withBlocks } from "./links.ts";
+import { filesIn, filesNote, pieceBlock, withBlocks } from "./links.ts";
 import type { Client, Place, Project, Session, Transfer } from "./model.ts";
+import { picturesOf, SHOWN } from "./pictures.ts";
 import { findIn, talkOf } from "./read.ts";
 import { buildSnapshot, findProjects, nearestProject, readCodexProjects, type Built } from "./snapshot.ts";
 import { standalonePage } from "./standalone.ts";
-import { appendTransfers, dropPending, queuePieces, readBasket, saveUploads, takePending, tidyStore, writeBasket, type Pending } from "./store.ts";
+import { appendTransfers, dropPending, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
 import { tracePiece } from "./trace.ts";
 import { listModels, startFork, startNew, startTurn, type Along, type Turn } from "./talk.ts";
 import { oneLine } from "./util.ts";
@@ -385,6 +386,36 @@ export function serve(port: number, webDir: string): Served {
           if (item) return send(200, item);
         }
         return send(404, { error: "그런 조각이 없습니다" });
+      }
+      if (url.pathname === "/api/picture" || url.pathname === "/api/attached") {
+        // What went with a request besides its words: a picture (read from the client's record, where it is kept),
+        // or another file (one this tool kept when the request was sent from here). The n-th of that request.
+        const id = url.searchParams.get("item") ?? "";
+        const n = Number(url.searchParams.get("n") ?? 0);
+        const made = newestFirst().find((one) => one.bodies.has(id));
+        const item = made?.bodies.get(id);
+        const session = item ? made!.snapshot.sessions.find((one) => one.id === item.sessionId) : undefined;
+        if (item?.kind === "prompt" && session && Number.isInteger(n) && n >= 0) {
+          if (url.pathname === "/api/attached") {
+            const kept = uploadedFile(filesIn(item.text)[n] ?? "");
+            if (kept) {
+              response.writeHead(200, { "content-type": "application/octet-stream", "content-disposition": "attachment; filename*=UTF-8''" + encodeURIComponent(basename(kept)), "cache-control": "no-store", "x-content-type-options": "nosniff" });
+              return response.end(readFileSync(kept));
+            }
+          } else if (session.recordPath && item.turnId) {
+            // several requests can be of one Codex turn: the turn's pictures are theirs in the order they were said
+            const nth = (one: { id: string }) => Number(one.id.slice(one.id.lastIndexOf(":") + 1));
+            let before = 0;
+            if (session.client === "codex") for (const other of made!.bodies.values()) if (other.sessionId === item.sessionId && other.kind === "prompt" && other.turnId === item.turnId && nth(other) < nth(item)) before += other.images ?? 0;
+            const picture = n < (item.images ?? 0) ? (await picturesOf(session.client, session.recordPath, item.turnId))[before + n] : undefined;
+            if (picture && SHOWN.has(picture.type)) {
+              // what a request was sent with does not change: the page need not ask for it again
+              response.writeHead(200, { "content-type": picture.type, "content-length": picture.bytes.length, "cache-control": "private, max-age=86400", "x-content-type-options": "nosniff" });
+              return response.end(picture.bytes);
+            }
+          }
+        }
+        return send(404, { error: url.pathname === "/api/picture" ? "그 그림을 기록에서 꺼내지 못했습니다" : "그 파일은 이제 없습니다" });
       }
       if (url.pathname === "/api/talk") {
         // One session's items in the order they were said, for the talk pane. A very long text is cut; /api/item has the whole.

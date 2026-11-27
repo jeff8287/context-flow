@@ -153,6 +153,18 @@ test("a message from the screen takes pictures, other files and another model al
       assert.match(answered.text, /함께 받은 그림 1개: image\/png/);
       assert.match(answered.text, /함께 받은 파일 1개: odd name_\.log \(18바이트, 읽을 수 있습니다\)/);
       assert.match(answered.text, new RegExp("이번 답의 모델: " + model));
+      // What went with the request can be had again, to be shown and to be sent once more: the picture out of the
+      // client's record, the file out of the tool's own folder. (The server reads the records again first.)
+      await fetch(at + "/api/snapshot?project=" + project);
+      const picture = await fetch(at + "/api/picture?item=" + encodeURIComponent(asked.id) + "&n=0");
+      assert.deepEqual([picture.status, picture.headers.get("content-type")], [200, "image/png"]);
+      assert.ok(Buffer.from(await picture.arrayBuffer()).equals(Buffer.from(dot, "base64")));
+      assert.equal((await fetch(at + "/api/picture?item=" + encodeURIComponent(asked.id) + "&n=1")).status, 404); // there was one
+      assert.equal((await fetch(at + "/api/picture?item=" + encodeURIComponent(answered.id) + "&n=0")).status, 404); // an answer has none
+      const file = await fetch(at + "/api/attached?item=" + encodeURIComponent(asked.id) + "&n=0");
+      assert.equal(file.status, 200);
+      assert.equal(await file.text(), "line one\nline two\n");
+      assert.equal((await fetch(at + "/api/attached?item=" + encodeURIComponent(asked.id) + "&n=1")).status, 404);
       // the session is named after what was typed, and goes on with the model that was asked for
       const now = made.snapshot.sessions.find((one) => one.id === session.id)!;
       assert.equal(now.model, model);

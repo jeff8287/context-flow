@@ -26,9 +26,10 @@ let live: { session: string; turn: string; source: EventSource } | null = null;
 let trouble = { id: "", text: "" };
 /** What was last sent from here, so that it can be put back in the box if the session did not take it. */
 let sent = { session: "", text: "", pieces: [] as string[], files: [] as { file: File; url: string | null }[], taken: false };
-/** The request that is being said again in the open talk. draft, attached: what was in the box and what was attached
- *  before, put back if it is given up. */
-let redo: { session: string; item: string; draft: string; attached: string[] } | null = null;
+/** The request that is being said again in the open talk. draft, attached, picked: what was in the box, and the
+ *  pieces and files that were with it before, put back if it is given up. lost: what went with the request and
+ *  could not be had again (a file that is gone). */
+let redo: { session: string; item: string; draft: string; attached: string[]; picked: { file: File; url: string | null }[]; lost: string[] } | null = null;
 /** The session a fork of which is being begun: until it is, nothing more is sent from its talk. */
 let forking = "";
 /** Each item now on the page, by its id: a piece is cut from its text. */
@@ -386,7 +387,7 @@ function leave() {
 
 export function closeChat() {
   leave();
-  redo = null;
+  dropRedo();
   state.open = null;
   state.edge = null;
   state.trace = null;
@@ -446,7 +447,7 @@ function bubble(item: Said, who: "user" | "agent"): HTMLElement {
   };
   put(item.text);
   made.append(text);
-  if (who === "user") made.append(...fileCards(item.text, item.images), ...sentCards(item.text), ...sentCards(item.added ?? "", true));
+  if (who === "user") made.append(...fileCards(item.text, item.images, item.id), ...sentCards(item.text), ...sentCards(item.added ?? "", true));
   // what can be done with a message stands over it while the pointer is on it
   const acts = h("div", "acts");
   const session = state.sessions.get(item.sessionId);
@@ -694,20 +695,50 @@ function sentPictures(list: Picked[]): HTMLElement | null {
   return row;
 }
 
-/** The files a message says were sent along with it, by name; and how many pictures the record says came with it. */
-function fileCards(text: string, images = 0): HTMLElement[] {
-  const out = filesIn(text).map((path) => {
+/** What went with a message besides its words: the pictures the record says came with it, and the files it says
+ *  were sent along, by name. of: the request, when its pictures can be asked for. The pictures are in the client's
+ *  record and are read from there when they come into view; an exported record holds none, and says how many there were. */
+function fileCards(text: string, images = 0, of?: string): HTMLElement[] {
+  const row = h("div", "sent-files");
+  if (images && of && !state.bundle) for (let n = 0; n < images; n += 1) row.append(thumb(pictureOf(of, n), n));
+  else if (images) row.append(h("span", "file", "그림 " + images + "개"));
+  for (const path of filesIn(text)) {
     const chip = h("span", "file");
     chip.insertAdjacentHTML("beforeend", ICON.file);
     chip.append(h("b", "", path.split("/").pop() ?? path));
     chip.title = path;
-    return chip;
-  });
-  if (images) out.unshift(h("span", "file", "그림 " + images + "개"));
-  if (!out.length) return [];
-  const row = h("div", "sent-files");
-  row.append(...out);
-  return [row];
+    row.append(chip);
+  }
+  return row.childElementCount ? [row] : [];
+}
+const pictureOf = (item: string, n: number) => "/api/picture?item=" + encodeURIComponent(item) + "&n=" + n;
+
+/** A picture of a request, small; pressed, it is shown as large as the window lets it be. */
+function thumb(src: string, n: number): HTMLElement {
+  const img = h("img");
+  img.loading = "lazy";
+  img.alt = "함께 보낸 그림 " + (n + 1);
+  img.title = "누르면 크게 봅니다";
+  img.src = src;
+  img.onclick = () => showPicture(src);
+  img.onerror = () => img.replaceWith(h("span", "file", "그림 (기록에서 꺼내지 못했습니다)"));
+  return img;
+}
+function showPicture(src: string) {
+  const veil = h("div", "lightbox");
+  const img = h("img");
+  img.src = src;
+  img.alt = "";
+  veil.append(img);
+  const key = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return;
+    event.stopPropagation(); // Escape puts the picture away, and leaves the talk open
+    close();
+  };
+  const close = () => { veil.remove(); window.removeEventListener("keydown", key, true); };
+  veil.onclick = close;
+  window.addEventListener("keydown", key, true);
+  document.body.append(veil);
 }
 
 /** The button that opens the file chooser, the row the chosen files show in, and pasting files into the box. */
@@ -848,14 +879,12 @@ function drawRedo() {
   const on = redo && redo.session === state.open ? redo : null;
   bar.hidden = !on;
   if (!on) return;
-  const item = texts.get(on.item);
   bar.textContent = "";
   const says = h("div", "");
   says.append(h("b", "", "고쳐 보내기"), nothingBefore(on.item)
     ? "첫 요청이어서 물려받을 대화가 없습니다. 같은 폴더와 모델의 새 세션으로 시작합니다."
     : "이 요청 앞까지의 대화를 물려받은 새 세션이 갈라져 나옵니다. 이 세션은 그대로 남습니다.");
-  const lost = [item?.images ? "그림 " + item.images + "장" : "", item && filesIn(item.text).length ? "파일 " + filesIn(item.text).length + "개" : ""].filter(Boolean);
-  if (lost.length) says.append(h("span", "redo-lost", "함께 보냈던 " + lost.join(", ") + "은 따라가지 않습니다. 필요하면 다시 붙여 주세요."));
+  if (on.lost.length) says.append(h("span", "redo-lost", "함께 보냈던 것 가운데 다시 꺼내지 못한 것: " + on.lost.join(", ") + ". 필요하면 다시 붙여 주세요."));
   const cancel = h("button", "", "취소");
   cancel.type = "button";
   cancel.onclick = () => endRedo();
@@ -874,8 +903,44 @@ function markRedo() {
   for (let node = target.nextElementSibling; node; node = node.nextElementSibling) if (!node.classList.contains("turn-live")) node.classList.add("after-redo");
 }
 
-/** Take a request up to say it again: its words go into the box and its pieces are attached, to be changed there.
- *  same: it is sent as it is, at once (unless pictures or files went with it, which cannot be sent again from here). */
+/** The pictures and other files that went with a request, as files to be sent again. The pictures are read from the
+ *  client's record; the other files are those this tool kept when the request was sent from here. lost: what could
+ *  not be had (a file that is gone, a picture the record no longer gives). */
+async function wentWith(item: Said): Promise<{ files: File[]; lost: string[] }> {
+  const files: File[] = [];
+  const lost: string[] = [];
+  const ask = async (path: string) => {
+    try {
+      const got = await fetch(path);
+      return got.ok ? await got.blob() : null;
+    } catch {
+      return null;
+    }
+  };
+  const END: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+  for (let n = 0; n < (item.images ?? 0); n += 1) {
+    const blob = await ask(pictureOf(item.id, n));
+    if (blob && PICTURE.has(blob.type)) files.push(new File([blob], "그림 " + (n + 1) + "." + END[blob.type], { type: blob.type }));
+    else lost.push("그림 " + (n + 1));
+  }
+  const paths = filesIn(item.text);
+  for (let n = 0; n < paths.length; n += 1) {
+    const name = paths[n].split("/").pop() || "파일 " + (n + 1);
+    const blob = await ask("/api/attached?item=" + encodeURIComponent(item.id) + "&n=" + n);
+    if (blob) files.push(new File([blob], name, { type: "application/octet-stream" }));
+    else lost.push(name);
+  }
+  return { files, lost };
+}
+
+/** Let go of the request that was being said again, and of what was kept to be put back. */
+function dropRedo() {
+  if (redo) for (const one of redo.picked) if (one.url) URL.revokeObjectURL(one.url);
+  redo = null;
+}
+
+/** Take a request up to say it again: its words go into the box, and its pieces, pictures and files are attached,
+ *  to be changed there. same: it is sent as it is, at once (unless something that went with it could not be had). */
 async function beginRedo(item: Said, same = false) {
   const session = state.sessions.get(item.sessionId);
   if (!session || state.open !== session.id || forking) return;
@@ -887,17 +952,23 @@ async function beginRedo(item: Said, same = false) {
     texts.set(item.id, all);
   }
   const pieces = await cameWith(whole);
+  const { files, lost } = await wentWith(whole);
   const box = pane().querySelector<HTMLTextAreaElement>(".composer textarea");
   if (!box || state.open !== session.id) return; // the pane has gone elsewhere meanwhile
-  redo = { session: session.id, item: item.id, draft: redo?.session === session.id ? redo.draft : box.value, attached: redo?.session === session.id ? redo.attached : [...state.attached] };
+  // what was in the box and with it is kept to be put back; another request taken up meanwhile changes only what is said again
+  const before = redo?.session === session.id ? redo : null;
+  if (before) dropPicked();
+  redo = { session: session.id, item: item.id, draft: before ? before.draft : box.value, attached: before ? before.attached : [...state.attached], picked: before ? before.picked : picked, lost };
+  picked = [];
   state.attached = new Set(pieces.map(keep));
   if (pieces.length) keepBasket();
   box.value = typedPart(whole.text);
+  takeFiles(files);
   drawBasket();
   drawRedo();
   markRedo();
   box.dispatchEvent(new Event("input")); // the box takes the height of what is in it, and the button what can be done
-  if (same && !whole.images && !filesIn(whole.text).length) return void submitRedo(session.id);
+  if (same && !lost.length && picked.length === files.length) return void submitRedo(session.id);
   box.focus();
   box.setSelectionRange(box.value.length, box.value.length);
 }
@@ -911,6 +982,9 @@ function endRedo() {
   if (box && state.open === was.session) {
     box.value = was.draft;
     state.attached = new Set(was.attached.filter((id) => state.basket.some((piece) => piece.id === id)));
+    dropPicked();
+    picked = was.picked;
+    drawPicked();
     box.dispatchEvent(new Event("input"));
   }
   drawBasket();
@@ -960,7 +1034,7 @@ async function submitRedo(id: string) {
     sent = { session: made.session, text, pieces: [], files: taken, taken: false };
     for (const piece of along) state.on.add(home(piece.sessionId)); // so that the line to the fork is on the map
     if (redo === going) {
-      redo = null;
+      dropRedo();
       box.value = "";
       box.style.height = "auto";
       picked = [];
@@ -1839,7 +1913,7 @@ export async function drawChat(id: string, focus?: string, quiet = false, span?:
     box.textContent = "";
     dropPicked(); // what was picked was for the talk that was open
     wantModel = "";
-    redo = null;
+    dropRedo();
     const form = h("form", "composer");
     composer(form, id);
     box.append(h("header", "chat-head"), h("div", "tabs"), h("div", "ties"), h("div", "talk"), h("div", "ctx"), form);
