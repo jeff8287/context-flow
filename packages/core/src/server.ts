@@ -20,7 +20,7 @@ import { findIn, goneOf, talkOf } from "./read.ts";
 import { forgetKept, FROM_FOLDERS, lookAgain, projectFor, readProjects, shown } from "./projects.ts";
 import { buildSnapshot, findProjects, nearestProject, type Built } from "./snapshot.ts";
 import { standalonePage } from "./standalone.ts";
-import { appendTransfers, dropPending, keepFolder, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
+import { appendTransfers, dropPending, keepFolder, type KeptFolder, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
 import { tracePiece } from "./trace.ts";
 import { canStart, listModels, startFork, startNew, startTurn, type Along, type Turn } from "./talk.ts";
 import { oneLine, within } from "./util.ts";
@@ -326,7 +326,24 @@ export function serve(port: number, webDir: string): Served {
           const project = readProjects().projects.find((one) => one.id === asked.project);
           if (!project) return send(404, { error: "그런 프로젝트가 없습니다" });
           if (!project.kept) return send(400, { error: "이 화면에서 더한 프로젝트만 목록에서 뺄 수 있습니다" });
-          forgetKept(project);
+          // gone: the folders let go, each with when it was kept, for the screen to put back as they were
+          const gone = forgetKept(project);
+          const { projects, from } = readProjects();
+          return send(200, { projects: projects.map(shown), from, gone });
+        }
+        if (url.pathname === "/api/projects/keep") {
+          // Put folders back on the list as they were kept (what /api/projects/forget said it let go): where a project
+          // stands on the list goes by when its folder was kept. A folder in a project already is that project's.
+          const named = Array.isArray(asked.folders) ? (asked.folders as Record<string, unknown>[]) : [];
+          if (!named.length) return send(400, { error: "다시 적을 폴더가 없습니다" });
+          const folders: KeptFolder[] = [];
+          for (const one of named) {
+            const root = folderNamed(one?.root);
+            if (!root || root === "/") return send(400, { error: "그런 폴더가 없습니다: " + String(one?.root ?? "") });
+            folders.push({ root, at: Number(one?.at) > 0 ? Number(one.at) : Date.now() });
+          }
+          for (const one of folders) keepFolder(one.root, one.at);
+          lookAgain();
           const { projects, from } = readProjects();
           return send(200, { projects: projects.map(shown), from });
         }

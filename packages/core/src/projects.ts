@@ -135,11 +135,12 @@ export function shown(project: Project): Project {
   return { id: project.id, name: project.name, roots: project.roots, ...(project.kept ? { kept: true } : {}) };
 }
 
-/** Take a project the screen put on the list off it again: the folders kept that are it are let go. No record is
- *  touched, and a session begun there from the screen again keeps it again. False: none was kept. */
-export function forgetKept(project: Project): boolean {
+/** Take a project the screen put on the list off it again: the folders kept that are it are let go, and are said
+ *  (each with when it was kept), so that they can be kept again as they were. No record is touched, and a session
+ *  begun there from the screen again keeps it again. */
+export function forgetKept(project: Project): KeptFolder[] {
   const root = project.roots[0];
-  const dropped = dropFolders((one) => one === root || workTree(one) === root);
+  const gone = dropFolders((one) => one === root || workTree(one) === root);
   lookAgain();
-  return dropped > 0;
+  return gone;
 }
