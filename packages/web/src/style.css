@@ -159,7 +159,7 @@ button { cursor: pointer; }
 .tile-meta { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11px; white-space: nowrap; }
 .tile-status { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
 .tile-status span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.tile-client { margin-left: auto; }
+.tile-client { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; flex-shrink: 100; } /* where the row runs out of room, the client's name gives way before the state does */
 .chipx { flex: none; display: inline-flex; align-items: center; gap: 2px; height: 17px; padding: 0 5px 0 3px; border-radius: 9px; background: color-mix(in srgb, currentColor 13%, transparent); font-size: 10.5px; font-weight: 600; }
 .chipx svg { width: 12px; height: 12px; }
 .chipx.reach:hover { background: color-mix(in srgb, currentColor 28%, transparent); }
