@@ -954,15 +954,10 @@ function drawModels(session: Session) {
   const foot = pane().querySelector<HTMLElement>(".composer .composer-foot");
   const select = foot?.querySelector<HTMLSelectElement>("select");
   if (!foot || !select) return;
-  if (!offered.has(session.client) || (!offered.get(session.client)!.length && Date.now() - (offeredAt.get(session.client) ?? 0) > 30_000)) {
-    if (!offered.has(session.client)) offered.set(session.client, []);
-    offeredAt.set(session.client, Date.now());
-    void call<{ models: { id: string; name: string }[] }>("/api/models?client=" + session.client).then(({ models }) => {
-      offered.set(session.client, models);
-      const open = state.open ? state.sessions.get(state.open) : undefined;
-      if (open?.client === session.client) drawModels(open);
-    }).catch(() => {});
-  }
+  askModels(session.client, () => {
+    const open = state.open ? state.sessions.get(state.open) : undefined;
+    if (open?.client === session.client) drawModels(open);
+  });
   const names = new Map<string, string>();
   for (const one of offered.get(session.client) ?? []) names.set(one.id, one.name);
   for (const other of [...state.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt)) if (other.client === session.client && other.model && !names.has(other.model)) names.set(other.model, other.model);
@@ -984,6 +979,18 @@ function drawModels(session: Session) {
   select.value = wantModel;
   select.classList.toggle("set", Boolean(wantModel));
   foot.hidden = !names.size;
+}
+
+/** Ask the server what a client offers, unless that is known (then: done is not called); a while after it was told
+ *  there is none, it is asked again. done: called once the answer is in. */
+function askModels(client: Client, done: () => void) {
+  if (offered.has(client) && (offered.get(client)!.length || Date.now() - (offeredAt.get(client) ?? 0) <= 30_000)) return;
+  if (!offered.has(client)) offered.set(client, []);
+  offeredAt.set(client, Date.now());
+  void call<{ models: { id: string; name: string }[] }>("/api/models?client=" + client).then(({ models }) => {
+    offered.set(client, models);
+    done();
+  }).catch(() => {});
 }
 
 function tune() {
@@ -1986,8 +1993,26 @@ function tuneNew() {
   }
   const browse = pane().querySelector<HTMLElement>(".browse");
   if (browse && !first) browse.hidden = !fresh.away;
+  // a first session's model: its client's own, or one of those the client offers
+  const firstModel = pane().querySelector<HTMLSelectElement>(".first-model");
+  if (first && firstModel) {
+    askModels(fresh.client, () => { if (state.fresh === fresh) tune(); });
+    const models = offered.get(fresh.client) ?? [];
+    if (fresh.model && !models.some((one) => one.id === fresh.model)) fresh.model = undefined;
+    const drawn = JSON.stringify([fresh.client, ...models.map((one) => one.id)]);
+    if (firstModel.dataset.drawn !== drawn) {
+      // (drawn again only when the choices changed, so that a list that is open is not shut under the hand)
+      firstModel.dataset.drawn = drawn;
+      const own = h("option", "", CLIENT[fresh.client] + " 기본 모델");
+      own.value = "";
+      own.title = "고르지 않으면 그 클라이언트에 설정된 기본 모델로 시작합니다";
+      firstModel.replaceChildren(own, ...models.map((one) => { const made = h("option", "", one.name === one.id ? one.id : one.name + " · " + one.id); made.value = one.id; return made; }));
+    }
+    firstModel.value = fresh.model ?? "";
+    firstModel.disabled = held;
+  }
   const note = pane().querySelector<HTMLElement>(".fresh-note");
-  if (note) note.textContent = !state.clients[fresh.client] ? "이 컴퓨터에서 " + CLIENT[fresh.client] + "를 찾지 못해 시작할 수 없습니다." : plan?.like ? "모델과 권한(승인, 샌드박스)은 ‘" + flat(plan.like.title, 28) + "’ 세션을 따릅니다." : CLIENT[fresh.client] + "의 기본 모델과 권한으로 시작합니다.";
+  if (note) note.textContent = !state.clients[fresh.client] ? "이 컴퓨터에서 " + CLIENT[fresh.client] + "를 찾지 못해 시작할 수 없습니다." : plan?.like ? "모델과 권한(승인, 샌드박스)은 ‘" + flat(plan.like.title, 28) + "’ 세션을 따릅니다." : first && fresh.model ? fresh.model + " 모델로, 권한(승인, 샌드박스)은 " + CLIENT[fresh.client] + "의 기본 설정으로 시작합니다." : CLIENT[fresh.client] + "의 기본 모델과 권한으로 시작합니다.";
   pane().querySelectorAll<HTMLElement>(".client").forEach((one) => one.classList.toggle("on", one.dataset.client === fresh.client));
   // what the new session will be given besides the request: the pieces attached, each in the colour of where it came from
   const list = pane().querySelector<HTMLElement>(".fresh-pieces");
@@ -2043,7 +2068,7 @@ async function startNew() {
     const plan = first ? null : freshWay();
     const files = await wireFiles(going);
     const asked = first
-      ? { client: fresh.client, text, cwd: fresh.cwd, ...(files.length ? { files } : {}) }
+      ? { client: fresh.client, text, cwd: fresh.cwd, ...(fresh.model ? { model: fresh.model } : {}), ...(files.length ? { files } : {}) }
       : { project: state.snap!.project.id, client: fresh.client, text, pieces, cwd: plan?.cwd, like: plan ? plan.like?.id ?? "none" : undefined, ...(files.length ? { files } : {}) };
     const made = await post<{ turn: string; session: string; cwd: string; project?: Project }>("/api/new", asked);
     box.value = "";
@@ -2126,7 +2151,10 @@ export function drawNew() {
       one.append(h("span", "client-off", "찾지 못함"));
     }
     one.onclick = () => {
-      if (fresh.client !== client) fresh.like = undefined; // a session of the other client is nothing to go by
+      if (fresh.client !== client) {
+        fresh.like = undefined; // a session of the other client is nothing to go by
+        fresh.model = undefined; // nor a model of the other's
+      }
       fresh.client = client;
       try {
         localStorage.setItem("cf-new-client", client);
@@ -2159,7 +2187,9 @@ export function drawNew() {
     }),
     choose("fresh-model", "모델", "새 세션의 모델. 고른 모델을 쓰던 세션의 권한도 함께 따릅니다", (value) => { fresh.like = value; }),
   );
-  if (first) body.append(pick, h("div", "browse"), h("p", "fresh-note", ""));
+  const firstWays = h("div", "fresh-ways");
+  firstWays.append(choose("first-model", "모델", "첫 세션의 모델. 고르지 않으면 그 클라이언트의 기본 모델입니다. 권한(승인, 샌드박스)은 그 클라이언트의 기본 설정입니다", (value) => { fresh.model = value || undefined; }));
+  if (first) body.append(pick, firstWays, h("div", "browse"), h("p", "fresh-note", ""));
   else body.append(pick, ways, h("div", "browse"), h("p", "fresh-note", ""), h("div", "fresh-pieces"));
   const form = h("form", "composer");
   const basket = h("div", "basket");
