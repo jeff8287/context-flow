@@ -4,7 +4,7 @@
 // disturbed. (Not to the system's temporary folder: the tool takes files there for scratch notes, not shared work.)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -424,6 +424,16 @@ test("from a map, a session is begun in a folder outside its projects, chosen fr
     const session = both.sessions.find((one: { id: string }) => one.id === begun.body.session);
     assert.deepEqual([session?.projectId, session?.cwd], [begun.body.project.id, join(made, "src")]);
     assert.ok(both.links.some((link: { kind: string; from: { itemId: string }; to: { sessionId: string } }) => link.kind === "transfer" && link.from.itemId === answer.id && link.to.sessionId === begun.body.session));
+    // The screen may take it off the list again, and only it: not a project of the sidebar, nor one there is not.
+    // Only the note of it goes; the session's own record stays where its client wrote it.
+    assert.deepEqual(listed.projects.map((one: { kept?: boolean }) => Boolean(one.kept)), [false, false, true]);
+    assert.equal((await post("/api/projects/forget", { project: PROJECTS.api.id })).status, 400);
+    assert.equal((await post("/api/projects/forget", { project: "dir-000000000000" })).status, 404);
+    const forgot = await post("/api/projects/forget", { project: begun.body.project.id });
+    assert.equal(forgot.status, 200, JSON.stringify(forgot.body));
+    assert.deepEqual(forgot.body.projects.map((one: { id: string }) => one.id), [PROJECTS.api.id, PROJECTS.web.id]);
+    assert.deepEqual(JSON.parse(readFileSync(join(FLOW, "folders.json"), "utf8")), []);
+    assert.ok(session.recordPath && existsSync(session.recordPath), "the session's record is still there");
   } finally {
     rmSync(join(FLOW, "folders.json"), { force: true });
     await served.close();

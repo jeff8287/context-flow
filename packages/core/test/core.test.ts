@@ -18,13 +18,13 @@ import { readClaudeLive, settleActivity, type ClaudeLive, type Live } from "../s
 import type { Item, Place, Project, Session, Snapshot, Transfer } from "../src/model.ts";
 import { flat, forgetPastes, pasteLinks } from "../src/paste.ts";
 import { forgetPictures, picturesOf } from "../src/pictures.ts";
-import { folderProjects, forgetProjects, projectFor, readProjects } from "../src/projects.ts";
+import { folderProjects, forgetKept, forgetProjects, projectFor, readProjects } from "../src/projects.ts";
 import { tracePiece } from "../src/trace.ts";
 import { goneOf, talkOf } from "../src/read.ts";
 import { LABEL, servicePath, servicePlist } from "../src/service.ts";
 import { buildSnapshot, findProjects, nearestProject, waitingOf } from "../src/snapshot.ts";
 import { standalonePage } from "../src/standalone.ts";
-import { appendTransfers, dropPending, keepFolder, queuePieces, readBasket, readPending, readTransfers, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "../src/store.ts";
+import { appendTransfers, dropPending, keepFolder, queuePieces, readBasket, readFolders, readPending, readTransfers, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "../src/store.ts";
 import { startNew, type Turn } from "../src/talk.ts";
 import { typed } from "../src/util.ts";
 import { grown, Interest } from "../src/watch.ts";
@@ -845,6 +845,8 @@ test("where the Codex app has no projects, the folders the sessions worked in st
     keepFolder(newRepo, hour(6).getTime());
     keepFolder(plain, hour(7).getTime());
     assert.deepEqual(readProjects().projects.map((one) => [one.id === "side" ? one.id : one.name, one.roots, /^dir-/.test(one.id) || one.id === "side"]), [["side", [repo], true], ["only-plain", [plain], true], ["only-new", [newRepo], true]]);
+    // those are the ones the screen may take off the list again; the sidebar's is not
+    assert.deepEqual(readProjects().projects.map((one) => Boolean(one.kept)), [false, true, true]);
     // the project a session begun in a folder is of: the one it is in, kept or the sidebar's; or, in none, its work tree, not kept yet
     assert.deepEqual([projectFor(join(repo, "packages", "web")).project.id, projectFor(join(newRepo, "src")).project.name, projectFor(join(newRepo, "src")).known], ["side", "only-new", true]);
     const other = join(scratchDir, "only-other");
@@ -855,6 +857,12 @@ test("where the Codex app has no projects, the folders the sessions worked in st
     process.env.CONTEXT_FLOW_PROJECTS = "folders";
     // found from the folders, a kept folder counts as a folder a session worked in when it was kept: of its work tree
     assert.deepEqual([readProjects().from, readProjects().projects.map((one) => one.name)], ["folders", ["only-plain", "only-new", "repo", "repo-tree", "notes", "cli", "only"]]);
+    // there, a folder kept that sessions worked in is on the list for that, and is not the screen's to take off
+    assert.deepEqual(readProjects().projects.filter((one) => one.kept).map((one) => one.name), ["only-plain", "only-new"]);
+    // taken off, its folder is let go (and only it), and it is off the list
+    assert.equal(forgetKept(readProjects().projects.find((one) => one.name === "only-new")!), true);
+    assert.deepEqual(readFolders().map((one) => one.root).sort(), [join(repo, "packages"), join(scratchDir, "only-gone"), plain].sort());
+    assert.ok(!readProjects().projects.some((one) => one.name === "only-new"));
   } finally {
     delete process.env.CONTEXT_FLOW_CLAUDE_HOME;
     delete process.env.CONTEXT_FLOW_CODEX_HOME;

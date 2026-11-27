@@ -6,7 +6,7 @@ import { closeChat, drawChat, drawEdge, drawNew, drawTrace, seen as sessionSeen 
 import { drawLanes } from "./lanes.ts";
 import { drawMap, fitMap, focusMap, spotsOf, stepZoom, tidyMap } from "./map.ts";
 import { noticeLine, noticesOf, type Notice } from "./notice.ts";
-import { act, ago, buildGraph, call, CLIENT, colorOf, el, h, ICON, labelBasket, loadBasket, many, net, owner, projectOf, projectsOn, projName, state, syncBasket, tops, type Span } from "./state.ts";
+import { act, ago, buildGraph, call, CLIENT, colorOf, el, h, ICON, labelBasket, loadBasket, many, net, owner, post, projectOf, projectsOn, projName, state, syncBasket, tops, type Span } from "./state.ts";
 import { under } from "../../core/src/util.ts";
 import "./style.css";
 
@@ -341,6 +341,34 @@ function showNone(looked: Looked[] | null) {
     elsewhere,
   );
 }
+/** A project this screen put on the list that is being taken off it: asked about once more in its row. And what went
+ *  wrong when it was taken off. */
+let dropping: string | null = null;
+let dropError = "";
+
+/** Take a project this screen put on the list off it again (only the note of it goes: no record is touched). Off the
+ *  map first, if it is on it; if it was all there was on the map, the first other project is shown instead. */
+async function forget(id: string) {
+  const fail = (text: string) => { dropError = text; drawPicker(); };
+  if (chosen.includes(id)) {
+    if (chosen.length > 1) await withProject(id, false);
+    else {
+      const other = state.projects.find((one) => one.id !== id);
+      if (!other) return fail("지도에 올릴 다른 프로젝트가 없어서 뺄 수 없습니다");
+      await show([other.id]);
+    }
+    if (chosen.includes(id)) return fail("지도에서 내리지 못했습니다. 서버가 답하는지 봐 주세요");
+  }
+  try {
+    state.projects = (await post<{ projects: Project[] }>("/api/projects/forget", { project: id })).projects;
+  } catch (error) {
+    return fail((error as Error).message);
+  }
+  dropping = null;
+  dropError = "";
+  drawPicker();
+}
+
 /** Which projects are on the map, kept for the next time the screen is opened without being told (as an app is). */
 const remember = () => { try { localStorage.setItem("cf-last", chosen.join(",")); } catch { /* storage may be shut off */ } };
 const remembered = () => { try { return localStorage.getItem("cf-last") ?? ""; } catch { return ""; } };
@@ -363,7 +391,8 @@ function drawPicker() {
   const menu = el<HTMLElement>("project-menu");
   menu.textContent = "";
   if (state.alone) return;
-  menu.append(h("div", "proj-hint", "이름을 누르면 그 프로젝트만 봅니다. 앞의 네모를 누르면 지금 지도에 함께 올립니다." + (foundFrom === "folders" && !state.bundle ? " Codex 앱의 프로젝트가 없어서, 세션이 일한 폴더를 최근 순으로 보입니다." : "")));
+  const added = !state.bundle && state.projects.some((one) => one.kept);
+  menu.append(h("div", "proj-hint", "이름을 누르면 그 프로젝트만 봅니다. 앞의 네모를 누르면 지금 지도에 함께 올립니다." + (foundFrom === "folders" && !state.bundle ? " Codex 앱의 프로젝트가 없어서, 세션이 일한 폴더를 최근 순으로 보입니다." : "") + (added ? " 뒤에 ×가 있는 것은 이 화면에서 더한 프로젝트이고, 목록에서 뺄 수 있습니다." : "")));
   // the ones on the map first, in the order they were put there; then the rest, as the Codex sidebar has them (or,
   // found from the folders, the one worked in last first)
   const listed = state.bundle ? state.projects : [...on, ...state.projects.filter((one) => !chosen.includes(one.id))];
@@ -382,6 +411,30 @@ function drawPicker() {
     only.title = one.roots.join("\n");
     only.onclick = () => void show([one.id]);
     row.append(box, only);
+    if (one.kept && !state.bundle) {
+      // a project this screen put on the list (a folder a session was begun in from here) can be taken off it again
+      if (dropping === one.id) {
+        row.classList.add("asking");
+        const ask = h("div", "proj-ask");
+        const yes = h("button", "proj-yes", "빼기");
+        yes.type = "button";
+        yes.onclick = () => void forget(one.id);
+        const no = h("button", "proj-no", "취소");
+        no.type = "button";
+        no.onclick = () => { dropping = null; dropError = ""; drawPicker(); };
+        ask.append(h("span", "", dropError || "목록에서 뺄까요? 기록은 남습니다"), yes, no);
+        if (dropError) ask.classList.add("failed");
+        row.append(ask);
+      } else {
+        const drop = h("button", "proj-drop");
+        drop.type = "button";
+        drop.innerHTML = ICON.close;
+        drop.title = "목록에서 빼기: 이 화면에서 더한 프로젝트입니다. 기록은 그대로 두고, 그 폴더에서 다시 시작하면 다시 더해집니다";
+        drop.setAttribute("aria-label", one.name + " 목록에서 빼기");
+        drop.onclick = () => { dropping = one.id; dropError = ""; drawPicker(); };
+        row.append(drop);
+      }
+    }
     menu.append(row);
   }
   if (bundles.size) menu.append(h("div", "proj-sep", "내보낸 기록"));
@@ -809,6 +862,7 @@ function wireApp(close: () => void) {
   const picker = el<HTMLElement>("project-menu");
   el<HTMLElement>("project").onclick = (event) => {
     event.stopPropagation();
+    if (picker.hidden && dropping) { dropping = null; dropError = ""; drawPicker(); } // what was being asked is not asked again
     picker.hidden = !picker.hidden;
     el<HTMLElement>("project").setAttribute("aria-expanded", String(!picker.hidden));
     if (!picker.hidden) picker.scrollTop = 0;

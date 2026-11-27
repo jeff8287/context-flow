@@ -17,7 +17,7 @@ import { filesIn, filesNote, pieceBlock, withBlocks } from "./links.ts";
 import type { Client, Place, Project, Session, Transfer } from "./model.ts";
 import { picturesOf, SHOWN } from "./pictures.ts";
 import { findIn, goneOf, talkOf } from "./read.ts";
-import { FROM_FOLDERS, lookAgain, projectFor, readProjects, shown } from "./projects.ts";
+import { forgetKept, FROM_FOLDERS, lookAgain, projectFor, readProjects, shown } from "./projects.ts";
 import { buildSnapshot, findProjects, nearestProject, type Built } from "./snapshot.ts";
 import { standalonePage } from "./standalone.ts";
 import { appendTransfers, dropPending, keepFolder, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
@@ -318,6 +318,17 @@ export function serve(port: number, webDir: string): Served {
             if (!turn.done) turn.stop();
             return send(502, { error: String(error instanceof Error ? error.message : error) });
           }
+        }
+        if (url.pathname === "/api/projects/forget") {
+          // Take a project this screen put on the list (a folder a session was begun in from here while it lay in no
+          // project) off it again. Only the note of it goes: no record is touched, and the sessions there are on no
+          // map until a session is begun there from here again.
+          const project = readProjects().projects.find((one) => one.id === asked.project);
+          if (!project) return send(404, { error: "그런 프로젝트가 없습니다" });
+          if (!project.kept) return send(400, { error: "이 화면에서 더한 프로젝트만 목록에서 뺄 수 있습니다" });
+          forgetKept(project);
+          const { projects, from } = readProjects();
+          return send(200, { projects: projects.map(shown), from });
         }
         if (url.pathname === "/api/fork") {
           // Say one of a session's requests again, in other words or the same. What was said stays said: the session
