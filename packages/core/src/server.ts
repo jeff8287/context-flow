@@ -313,7 +313,7 @@ export function serve(port: number, webDir: string): Served {
           try {
             const session = await Promise.race([ready, new Promise<string>((_, reject) => setTimeout(() => reject(new Error("새 세션이 시작되지 않았습니다")), 20_000))]);
             if (keep) keepFolder(keep); // a project of its own from now on, beside the others
-            return send(200, { turn: turn.id, session, client, cwd, model: like?.model ?? null, ...(into ? { project: shown(into) } : {}) });
+            return send(200, { turn: turn.id, session, client, cwd, model: more.along.model ?? like?.model ?? null, ...(into ? { project: shown(into) } : {}) });
           } catch (error) {
             if (!turn.done) turn.stop();
             return send(502, { error: String(error instanceof Error ? error.message : error) });

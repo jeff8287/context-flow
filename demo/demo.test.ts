@@ -362,16 +362,17 @@ test("with no project to begin it in, a first session is begun in a folder the p
     for (const [cwd, pieces] of [["/", []], [join(folder, "nowhere"), []], [folder, [{ sessionId: SESSIONS.tests.id, itemId: "x", start: 0, end: 1 }]]] as const) {
       assert.equal((await post("/api/new", { client: "claude", text: "x", cwd, pieces })).status, 400);
     }
-    for (const [client, cwd] of [["claude", folder], ["codex", join(folder, "src")]] as const) {
-      const begun = await post("/api/new", { client, text: "첫 세션 시험", cwd });
+    // each with a model chosen in the window, for a session of either client
+    for (const [client, cwd, model] of [["claude", folder, "haiku"], ["codex", join(folder, "src"), "demo-codex-mini"]] as const) {
+      const begun = await post("/api/new", { client, text: "첫 세션 시험", cwd, model });
       assert.equal(begun.status, 200, JSON.stringify(begun.body));
-      assert.equal(begun.body.cwd, cwd);
+      assert.deepEqual([begun.body.cwd, begun.body.model], [cwd, model]);
       for (let tries = 0; tries < 40 && (await get("/api/turn/active?session=" + begun.body.session)).turn; tries += 1) await new Promise((resolve) => setTimeout(resolve, 250));
       // the work tree is a project of its own, and the session is in it
       const project = (await get("/api/projects")).projects.find((one: { roots: string[] }) => one.roots.join() === folder);
       assert.ok(project, "the folder is a project");
       const session = (await get("/api/snapshot?project=" + encodeURIComponent(project.id))).sessions.find((one: { id: string }) => one.id === begun.body.session);
-      assert.deepEqual([session?.client, session?.cwd], [client, cwd]);
+      assert.deepEqual([session?.client, session?.cwd, session?.model], [client, cwd, model]);
     }
   } finally {
     delete process.env.CONTEXT_FLOW_PROJECTS;
