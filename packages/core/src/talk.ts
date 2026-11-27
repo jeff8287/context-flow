@@ -8,6 +8,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Client, Session, TurnEvent } from "./model.ts";
 
@@ -55,6 +56,18 @@ const notThere = (error: Error) => (error as NodeJS.ErrnoException).code === "EN
 function codexBin(): string {
   const bundled = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
   return process.env.CONTEXT_FLOW_CODEX ?? (existsSync(bundled) ? bundled : "codex");
+}
+
+/** The Claude Code to start: the one CONTEXT_FLOW_CLAUDE names, or the one on the PATH. */
+function claudeBin(): string {
+  return process.env.CONTEXT_FLOW_CLAUDE ?? "claude";
+}
+
+/** Whether a client can be started here: its program is where it is said to be, or in a folder on the PATH. */
+export function canStart(client: Client): boolean {
+  const program = client === "codex" ? codexBin() : claudeBin();
+  if (program.includes("/")) return existsSync(program);
+  return (process.env.PATH ?? "").split(delimiter).some((dir) => dir !== "" && existsSync(join(dir, program)));
 }
 
 /** What the thread's last turn ran with, read from its record, so that the next turn runs the same way. */
@@ -220,7 +233,7 @@ function runClaude(session: Where & { id: string }, prompt: string, along: Along
   const model = along.model ?? (session.model && /^claude-/.test(session.model) ? session.model : undefined);
   if (model) flags.push("--model", model);
   for (const dir of along.dirs ?? []) flags.push("--add-dir", dir);
-  const child = spawn(process.env.CONTEXT_FLOW_CLAUDE ?? "claude", flags, { cwd: session.cwd, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(claudeBin(), flags, { cwd: session.cwd, stdio: ["pipe", "pipe", "pipe"] });
   const send = (message: unknown) => { if (child.stdin.writable) child.stdin.write(JSON.stringify(message) + "\n"); };
   const waiting = new Map<string, { request: string; input: unknown }>();
   let finished = false;

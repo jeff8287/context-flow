@@ -24,6 +24,7 @@ npm run service -- restart   # 서비스로 띄워 두었을 때. 아니면 npm 
 | 지난 대화에 붙어 갔던 그림이 보이고, 고쳐 보낼 때 그림과 파일이 입력칸에 다시 붙습니다 | 대화의 요청 말풍선 | [USAGE.md](USAGE.md) 3절 | [#16](https://github.com/jeff8287/context-flow/pull/16) |
 | 화면을 Dock의 앱으로 설치합니다. 서버가 꺼져 있으면 그렇다고 알려 주고, 다시 뜨면 저절로 돌아옵니다 | 왼쪽 위 설치 단추 | [USAGE.md](USAGE.md) 5절 'Dock의 앱으로 쓰기' | [#13](https://github.com/jeff8287/context-flow/pull/13) |
 | Codex 데스크톱 앱 없이 씁니다. Claude Code만 쓰거나 Codex를 CLI로만 써도, 세션이 일한 폴더(git 작업 폴더)가 프로젝트로 잡힙니다 | 왼쪽 위 프로젝트 고르기 | [USAGE.md](USAGE.md) 1절 '프로젝트와 세션이 정해지는 법' | [#30](https://github.com/jeff8287/context-flow/pull/30) |
+| 읽을 세션이 하나도 없으면 빈 화면 대신 기록을 어디서 찾아봤는지와 할 일을 보여 주고, 첫 세션이 생기면 저절로 이어집니다. 새 세션 창은 이 컴퓨터에 없는 클라이언트를 '찾지 못함'으로 보입니다 | 지도 자리, 새 세션 창 | [USAGE.md](USAGE.md) 1절, 8절 | [#40](https://github.com/jeff8287/context-flow/pull/40) |
 | 요청을 고치거나 대화를 되감기 전에 오간 말을, 대화가 갈린 자리에서 펼쳐 봅니다. 거기서도 조각을 담아 다른 세션이나 그 세션 자신에게 보냅니다 | 대화의 점선 줄 '고치기 전의 대화', '되감기 전의 대화' | [DEMO.md](DEMO.md) 10절 | [#26](https://github.com/jeff8287/context-flow/pull/26), [#32](https://github.com/jeff8287/context-flow/pull/32) |
 
 ## 기록을 읽는 법이 바뀐 것
