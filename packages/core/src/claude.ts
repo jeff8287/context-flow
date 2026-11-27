@@ -2,7 +2,7 @@
 //   one conversation: ~/.claude/projects/<folder with every non-letter turned into ->/<session id>.jsonl
 //   its subagents:    ~/.claude/projects/<folder>/<session id>/subagents/agent-<id>.jsonl
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Item, Project, Session } from "./model.ts";
 import { activityOf } from "./codex.ts";
@@ -54,6 +54,10 @@ async function readTranscript(path: string, id: string, parentId: string | null,
     return kept.transcript;
   }
   const items: Item[] = [];
+  /** For each item, the record it was read from: a fork's record begins with copies of its parent's records. */
+  const sources = new Map<Item, string>();
+  /** The sessions this one comes from by forking, the nearest last: a fork of a fork names both. */
+  let forkOf: string[] = [];
   let cwd = "";
   let model: string | null = null;
   let first = 0;
@@ -76,6 +80,13 @@ async function readTranscript(path: string, id: string, parentId: string | null,
     }
     if (record?.type === "summary" && typeof record.summary === "string") {
       summary = record.summary;
+      continue;
+    }
+    if (record?.type === "derived-from") {
+      // Claude Code says so when a session was begun as another one stood (--fork-session, or /branch in its window).
+      // A fork of a fork is told the whole way it came: the session it was forked from stands last.
+      const from = (Array.isArray(record.sessions) ? record.sessions : []).filter((one: any) => (one?.via === "fork" || one?.via === "branch") && typeof one.id === "string").map((one: any) => one.id as string);
+      if (from.length) forkOf = from;
       continue;
     }
     // In a main transcript, sidechain lines are a subagent's talk: that has its own file.
@@ -101,6 +112,7 @@ async function readTranscript(path: string, id: string, parentId: string | null,
     const push = (kind: Item["kind"], text: string, more: Partial<Item> = {}) => {
       const made: Item = { id: id + ":" + items.length, sessionId: id, turnId, kind, at, text, ...more };
       items.push(made);
+      if (typeof record?.uuid === "string") sources.set(made, record.uuid);
       return made;
     };
     if (record?.type === "user") {
@@ -132,6 +144,19 @@ async function readTranscript(path: string, id: string, parentId: string | null,
     }
   }
   close();
+  // A fork's record begins with copies of what its parent had said (the same records, under the fork's id). They
+  // are the parent's: here the fork is what was said in it, and the line to its parent says the rest. The items
+  // keep the numbers they were given, so that an item is known by the same id whatever is left out.
+  if (forkOf.length && !parentId) {
+    const theirs = new Set<string>();
+    for (const one of forkOf) for (const record of await recordIds(join(dirname(path), one + ".jsonl"))) theirs.add(record);
+    if (theirs.size) {
+      const own = items.filter((item) => !theirs.has(sources.get(item) ?? ""));
+      items.length = 0;
+      items.push(...own);
+      first = items[0]?.at ?? first;
+    }
+  }
   const firstPrompt = items.find((item) => item.kind === "prompt");
   const transcript: Transcript | null = items.length
     ? {
@@ -144,8 +169,8 @@ async function readTranscript(path: string, id: string, parentId: string | null,
           model,
           startedAt: first,
           updatedAt: last,
-          origin: parentId ? "subagent" : "user",
-          parentId,
+          origin: parentId ? "subagent" : forkOf.length ? "fork" : "user",
+          parentId: parentId ?? forkOf.at(-1) ?? null,
           activity: activityOf(false, open, last, now),
           nowFile: null,
           recordPath: path,
@@ -164,6 +189,37 @@ async function readTranscript(path: string, id: string, parentId: string | null,
   }
   cache.set(path, { size: stat.size, mtime: stat.mtimeMs, transcript });
   return transcript;
+}
+
+/** The ids of the records in a transcript. Empty when it cannot be read. */
+async function recordIds(path: string): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (!existsSync(path)) return found;
+  for await (const line of createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity })) {
+    const at = line.indexOf('"uuid":"');
+    if (at !== -1) found.add(line.slice(at + 8, line.indexOf('"', at + 8)));
+  }
+  return found;
+}
+
+/** In a session's record: the record of the last answer before one of its requests (the request known by the id of
+ *  its own record). Null when nothing was answered before it; undefined when the request is not in the record.
+ *  It is where Claude Code is told to stop when the session is carried on from before that request. */
+export async function answerBefore(path: string, prompt: string): Promise<string | null | undefined> {
+  let last: string | null = null;
+  if (!existsSync(path)) return undefined;
+  for await (const line of createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity })) {
+    let record: any;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.isSidechain || typeof record?.uuid !== "string") continue;
+    if (record.uuid === prompt) return last;
+    if (record.type === "assistant") last = record.uuid;
+  }
+  return undefined;
 }
 
 /** The Claude Code sessions whose working folder lies in the project, with what they said and changed. */

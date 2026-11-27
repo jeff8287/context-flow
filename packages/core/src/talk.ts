@@ -20,8 +20,10 @@ export interface Fresh { client: Client; cwd: string; like: Session | null }
  *  when it is not to be the session's own; the session goes on with it afterwards, as when it is changed in the client. */
 export interface Along { images?: { path: string; type: string }[]; dirs?: string[]; model?: string }
 
-/** Where a turn runs. id: the session's, or null for a Codex thread that is yet to be given one. */
-interface Where { id: string | null; fresh: boolean; cwd: string; recordPath: string | null; model: string | null }
+/** Where a turn runs. id: the session's, or null for a Codex thread that is yet to be given one. fork: the session
+ *  is to be begun as another one stood after one of its turns (from: that session; at: the last turn of it that is
+ *  kept, as its client knows it). */
+interface Where { id: string | null; fresh: boolean; cwd: string; recordPath: string | null; model: string | null; fork?: { from: string; at: string } }
 
 export interface Turn {
   id: string;
@@ -127,7 +129,8 @@ function runCodex(session: Where, prompt: string, along: Along, emit: Emit, name
         approvalsReviewer: "user", // requests come to the screen, whoever reviewed them before
       };
       // a new thread works in the folder it was asked for, not in the folder of the session it runs like
-      if (session.fresh) send({ id: 1, method: "thread/start", params: { cwd: session.cwd, ...how } });
+      if (session.fork) send({ id: 1, method: "thread/fork", params: { threadId: session.fork.from, lastTurnId: session.fork.at, cwd: context.cwd ?? session.cwd, ...how, excludeTurns: true } });
+      else if (session.fresh) send({ id: 1, method: "thread/start", params: { cwd: session.cwd, ...how } });
       else send({ id: 1, method: "thread/resume", params: { threadId, cwd: context.cwd ?? session.cwd, ...how } });
     } else if (message.id === 1) {
       if (session.fresh) {
@@ -207,7 +210,10 @@ function claudeAsk(name: string, input: Record<string, any>, cwd: string): strin
 }
 
 function runClaude(session: Where & { id: string }, prompt: string, along: Along, emit: Emit): Runner {
-  const flags = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", session.fresh ? "--session-id" : "--resume", session.id];
+  const flags = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio"];
+  // a fork is the other session carried on under an id of its own, from the answer it is to keep as its last
+  if (session.fork) flags.push("--resume", session.fork.from, "--fork-session", "--session-id", session.id, "--resume-session-at", session.fork.at);
+  else flags.push(session.fresh ? "--session-id" : "--resume", session.id);
   const model = along.model ?? (session.model && /^claude-/.test(session.model) ? session.model : undefined);
   if (model) flags.push("--model", model);
   for (const dir of along.dirs ?? []) flags.push("--add-dir", dir);
@@ -305,6 +311,32 @@ export function startNew(fresh: Fresh, prompt: string, along: Along = {}): { tur
     if (event.t !== "done") return;
     quit();
     if (!turn.sessionId) fail(new Error(event.error ?? "새 세션을 시작하지 못했습니다"));
+  });
+  return { turn, ready };
+}
+
+/** Begin a session that is another one as it stood before one of its requests, with a request of its own in that
+ *  one's place. The other stays as it is: nothing is taken out of its record. point: the session to fork and the
+ *  last turn of it that is kept (Codex: the turn's id; Claude Code: the id of the record of the last answer). For a
+ *  Codex thread that is itself a fork it may name the thread that one came from. Null when nothing is kept: the new
+ *  session is then simply one that runs like the other. */
+export function startFork(session: Session, point: { from: string; at: string } | null, prompt: string, along: Along = {}): { turn: Turn; ready: Promise<string> } {
+  if (point === null) return startNew({ client: session.client, cwd: session.cwd, like: session }, prompt, along);
+  const where = { fresh: true, cwd: session.cwd, recordPath: session.recordPath, model: session.model, fork: point };
+  if (session.client === "claude") {
+    const id = randomUUID();
+    const turn = begin(id, prompt, (emit) => runClaude({ ...where, id }, prompt, along, emit));
+    return { turn, ready: Promise.resolve(id) };
+  }
+  let name: (id: string) => void = () => {};
+  let fail: (error: Error) => void = () => {};
+  const ready = new Promise<string>((resolve, reject) => { name = resolve; fail = reject; });
+  ready.catch(() => {});
+  const turn: Turn = begin("", prompt, (emit) => runCodex({ ...where, id: null }, prompt, along, emit, (id) => { turn.sessionId = id; name(id); }));
+  const quit = turn.listen((event) => {
+    if (event.t !== "done") return;
+    quit();
+    if (!turn.sessionId) fail(new Error(event.error ?? "세션을 갈라 내지 못했습니다"));
   });
   return { turn, ready };
 }
