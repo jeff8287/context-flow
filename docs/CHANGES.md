@@ -29,6 +29,7 @@ npm run service -- restart   # 서비스로 띄워 두었을 때. 아니면 npm 
 | 프로젝트가 있을 때도 새 세션 창의 '다른 폴더…'로 프로젝트 밖의 폴더(방금 만든 저장소 같은)에서 바로 시작합니다. 어느 프로젝트에도 없는 폴더는 새 프로젝트가 되어 지도에 함께 올라가고, 그 뒤로 프로젝트 목록에 남습니다 | 새 세션 창의 '폴더' | [USAGE.md](USAGE.md) 1절 | [#46](https://github.com/jeff8287/context-flow/pull/46) |
 | 이렇게 더한 프로젝트를 목록에서 뺍니다. 한 번 더 묻고, 지도에서도 내립니다. 세션의 기록은 그대로입니다 | 프로젝트 목록의 × | [USAGE.md](USAGE.md) 1절 | [#48](https://github.com/jeff8287/context-flow/pull/48) |
 | 목록에서 뺀 프로젝트를 잠시 뜨는 카드의 '되돌리기'로 원래 자리와 지도에 되돌립니다 | 빼고 난 뒤의 카드 | [USAGE.md](USAGE.md) 1절 | [#54](https://github.com/jeff8287/context-flow/pull/54) |
+| 새 세션 창에서 모델을 권한과 떼어 고릅니다. 권한은 어느 세션처럼 할지 고르고, 모델은 그 클라이언트가 내주는 모델 가운데서 따로 고릅니다 | 새 세션 창의 '모델'과 '권한' | [USAGE.md](USAGE.md) 3절 | [#56](https://github.com/jeff8287/context-flow/pull/56) |
 | 첫 세션 창에서 모델을 고릅니다. 그 클라이언트가 내주는 모델이 목록에 나오고, 고르지 않으면 기본 모델입니다 | 첫 세션 창의 '모델' | [USAGE.md](USAGE.md) 1절 | [#52](https://github.com/jeff8287/context-flow/pull/52) |
 | 요청을 고치거나 대화를 되감기 전에 오간 말을, 대화가 갈린 자리에서 펼쳐 봅니다. 거기서도 조각을 담아 다른 세션이나 그 세션 자신에게 보냅니다 | 대화의 점선 줄 '고치기 전의 대화', '되감기 전의 대화' | [DEMO.md](DEMO.md) 10절 | [#26](https://github.com/jeff8287/context-flow/pull/26), [#32](https://github.com/jeff8287/context-flow/pull/32) |
 
