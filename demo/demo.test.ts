@@ -162,3 +162,74 @@ test("a message from the screen takes pictures, other files and another model al
     await served.close();
   }
 });
+
+test("a request said again begins a fork of the session as it stood before that request, for a session of either client; the session itself stays as it was", { skip }, async () => {
+  useDemoHomes();
+  useStandIns();
+  const served = serve(0, join(ROOT, "packages", "web", "dist"));
+  const at = "http://127.0.0.1:" + (await served.ready);
+  const post = async (path: string, payload: unknown) => {
+    const got = await fetch(at + path, { method: "POST", headers: { "content-type": "application/json", origin: at }, body: JSON.stringify(payload) });
+    return { status: got.status, body: (await got.json()) as Record<string, any> };
+  };
+  /** The records, once the turn begun in a session has ended. */
+  const ended = async (session: string) => {
+    for (let tries = 0; tries < 40; tries += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!(await (await fetch(at + "/api/turn/active?session=" + session)).json()).turn) return read();
+    }
+    throw new Error("the turn did not end");
+  };
+  const nth = (item: { id: string }) => Number(item.id.slice(item.id.lastIndexOf(":") + 1));
+  const of = (made: Awaited<ReturnType<typeof read>>, session: string) => [...made.bodies.values()].filter((item) => item.sessionId === session).sort((one, other) => nth(one) - nth(other));
+  try {
+    for (const name of ["docs", "form"] as const) {
+      const session = SESSIONS[name];
+      const project = PROJECTS[session.project].id;
+      say(name, "먼저 이것부터 봐줘");
+      say(name, "그다음은 이것");
+      const before = of(await read(), session.id);
+      const prompts = before.filter((item) => item.kind === "prompt");
+      const last = prompts.at(-1)!;
+      // the last request, in other words: the fork knows every request before it, and not that one
+      const forked = await post("/api/fork", { project, session: session.id, item: last.id, text: "그다음은 저것으로 하자" });
+      assert.equal(forked.status, 200, JSON.stringify(forked.body));
+      assert.equal(forked.body.from, session.id);
+      const made = await ended(forked.body.session);
+      const fork = made.snapshot.sessions.find((one) => one.id === forked.body.session)!;
+      assert.deepEqual([fork.origin, fork.parentId, fork.title, fork.cwd], ["fork", session.id, "그다음은 저것으로 하자", PROJECTS[session.project].root]);
+      assert.ok(made.snapshot.links.some((link) => link.kind === "fork" && link.from.sessionId === session.id && link.to.sessionId === fork.id));
+      const said = of(made, fork.id);
+      assert.deepEqual(said.map((item) => item.kind), ["prompt", "answer"]); // what it was given is the other session's, not its own
+      assert.match(said[1].text, new RegExp("요청 " + (prompts.length - 1) + "개와 그 답까지를 물려받았"));
+      assert.deepEqual(of(made, session.id).map((item) => item.id), before.map((item) => item.id)); // nothing was taken out of the session, or added to it
+      // The fork's own request said again: the session forked is as it stood where the fork was made. A Codex
+      // fork keeps its history in the thread it came from, so that thread is the one forked again; Claude Code
+      // forks the fork, whose record begins with the copies.
+      const again = await post("/api/fork", { project, session: fork.id, item: said[0].id, text: "아니, 이것으로" });
+      assert.equal(again.status, 200, JSON.stringify(again.body));
+      assert.equal(again.body.from, session.client === "codex" ? session.id : fork.id);
+      const later = await ended(again.body.session);
+      const second = later.snapshot.sessions.find((one) => one.id === again.body.session)!;
+      assert.deepEqual([second.origin, second.parentId], ["fork", again.body.from]);
+      assert.match(of(later, second.id)[1].text, new RegExp("요청 " + (prompts.length - 1) + "개와 그 답까지를 물려받았"));
+      // an earlier request: only what came before it is kept
+      const early = await post("/api/fork", { project, session: session.id, item: prompts.at(-2)!.id, text: "먼저 저것부터" });
+      assert.equal(early.status, 200, JSON.stringify(early.body));
+      assert.match(of(await ended(early.body.session), early.body.session)[1].text, new RegExp("요청 " + (prompts.length - 2) + "개와 그 답까지를 물려받았"));
+    }
+    // A session's first request said again keeps nothing: what begins is a session that runs like it, and no fork.
+    const docs = SESSIONS.docs;
+    const first = of(await read(), docs.id).find((item) => item.kind === "prompt")!;
+    const anew = await post("/api/fork", { project: PROJECTS.api.id, session: docs.id, item: first.id, text: "처음부터 다시 물을게" });
+    assert.equal(anew.status, 200, JSON.stringify(anew.body));
+    assert.equal(anew.body.from, null);
+    const began = (await ended(anew.body.session)).snapshot.sessions.find((one) => one.id === anew.body.session)!;
+    assert.deepEqual([began.origin, began.parentId, began.client], ["user", null, "codex"]);
+    // what is not a request of the session, and words that are not there
+    assert.equal((await post("/api/fork", { project: PROJECTS.api.id, session: docs.id, item: SESSIONS.ci.id + ":0", text: "x" })).status, 404);
+    assert.equal((await post("/api/fork", { project: PROJECTS.api.id, session: docs.id, item: first.id, text: " " })).status, 400);
+  } finally {
+    await served.close();
+  }
+});

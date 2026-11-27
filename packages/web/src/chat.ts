@@ -6,6 +6,8 @@
 // next thing said to that session, wherever that is typed (the hook of the session's client takes it).
 // A piece can be carried: dragged onto a session of the map it is attached to what is said to that session next;
 // dragged onto the empty map it begins a session (drag.ts). The pane also shows where a new session is begun.
+// A request can be said again, in other words or the same: the session it was said in is not changed, and what is
+// sent goes to a fork of that session as it stood before the request.
 import type { Client, FarLink, Item, Link, Session, TraceStep, TurnEvent, Waiting } from "../../core/src/model.ts";
 import { freshPlan } from "../../core/src/fresh.ts";
 import { filesIn, withoutPieces } from "../../core/src/links.ts";
@@ -24,6 +26,11 @@ let live: { session: string; turn: string; source: EventSource } | null = null;
 let trouble = { id: "", text: "" };
 /** What was last sent from here, so that it can be put back in the box if the session did not take it. */
 let sent = { session: "", text: "", pieces: [] as string[], files: [] as { file: File; url: string | null }[], taken: false };
+/** The request that is being said again in the open talk. draft, attached: what was in the box and what was attached
+ *  before, put back if it is given up. */
+let redo: { session: string; item: string; draft: string; attached: string[] } | null = null;
+/** The session a fork of which is being begun: until it is, nothing more is sent from its talk. */
+let forking = "";
 /** Each item now on the page, by its id: a piece is cut from its text. */
 const texts = new Map<string, Said>();
 /** The stretch of text now selected, if it can be kept as a piece. */
@@ -379,6 +386,7 @@ function leave() {
 
 export function closeChat() {
   leave();
+  redo = null;
   state.open = null;
   state.edge = null;
   state.trace = null;
@@ -439,13 +447,23 @@ function bubble(item: Said, who: "user" | "agent"): HTMLElement {
   put(item.text);
   made.append(text);
   if (who === "user") made.append(...fileCards(item.text, item.images), ...sentCards(item.text), ...sentCards(item.added ?? "", true));
+  // what can be done with a message stands over it while the pointer is on it
+  const acts = h("div", "acts");
+  const session = state.sessions.get(item.sessionId);
+  if (who === "user" && session && top(session) && !state.bundle) {
+    const again = h("button", "redo", "고쳐 보내기");
+    again.title = "이 요청을 고쳐서 다시 보냅니다. 이 세션은 그대로 두고, 이 요청 앞까지의 대화를 물려받은 새 세션이 갈라져 나옵니다";
+    again.onclick = () => void beginRedo(item);
+    acts.append(again);
+  }
   // the whole of what was said, kept as one piece
   const grab = h("button", "grab", "담기");
   grab.title = "누르면 이 말 전체를 조각으로 담습니다. 끌어서 지도의 세션에 놓을 수도 있습니다. 일부만 담으려면 글을 끌어서 고르세요";
   const whole = () => (who === "user" ? typedPart(texts.get(item.id)?.text ?? item.text).length : (texts.get(item.id)?.text ?? item.text).length);
   grab.onclick = () => hold(item.id, 0, whole());
   carries(grab, () => { const spec = specOf(item.id, 0, whole()); return spec ? [spec] : []; });
-  made.append(grab);
+  acts.append(grab);
+  made.append(acts);
   const long = who === "user" && typedPart(item.text).length > 600;
   if (long) text.classList.add("clip");
   if (item.more || long) {
@@ -505,8 +523,21 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
     more.onclick = () => fill(body, session, items, true);
     body.append(more);
   }
+  // A fork's talk is what was said in the fork: what it was given when it was made is the other session's.
+  const base = from === 0 && session.origin === "fork" && session.parentId ? state.sessions.get(session.parentId) : undefined;
+  if (base) {
+    const note = h("button", "fork-note");
+    note.innerHTML = ICON.branch;
+    note.append(h("span", "", "‘" + flat(base.title, 30) + "’에서 갈라져 나온 세션입니다. 갈라지기 전의 대화는 그 세션에 있습니다."), h("u", "", "열기"));
+    note.onclick = () => act.openChat(base.id);
+    note.onpointerenter = () => act.hover(base.id);
+    note.onpointerleave = () => act.hover(null);
+    body.append(note);
+  }
   let pending: Said[] = [];
   let lastDay = "";
+  let asked: Said | null = null;
+  let answered: { asked: Said; at: HTMLElement } | null = null;
   const flush = () => {
     if (pending.length) body.append(work(pending));
     pending = [];
@@ -517,12 +548,24 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
       if (day(item.at) !== lastDay) body.append(h("div", "stamp", day(item.at) + " " + clock(item.at)));
       lastDay = day(item.at);
       body.append(bubble(item, "user"));
+      asked = item;
+      answered = null;
     } else if (item.kind === "answer" && item.final) {
       flush();
-      body.append(bubble(item, "agent"));
+      const made = bubble(item, "agent");
+      body.append(made);
+      if (asked) answered = { asked, at: made };
     } else pending.push(item);
   }
   flush();
+  // the answer to the last request can be asked for once more: the same request, said to a fork
+  if (answered && session.activity !== "running" && top(session) && !state.bundle) {
+    const { asked: request, at } = answered;
+    const again = h("button", "redo", "다시 받기");
+    again.title = "같은 요청을 다시 보내 답을 새로 받습니다. 이 세션은 그대로 두고, 그 요청 앞까지의 대화를 물려받은 새 세션이 갈라져 나옵니다";
+    again.onclick = () => void beginRedo(request, true);
+    at.querySelector(".acts")?.prepend(again);
+  }
   if (session.activity === "running") {
     const busy = h("div", "live");
     if (session.needs) busy.append(h("i", "bang", "!"), session.needs === "approval" ? "허용을 기다리는 중입니다. 이 세션을 연 창에서 답해 주세요" : "질문에 답하기를 기다리는 중입니다");
@@ -555,6 +598,7 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
       markSpan(target, span);
     }
   } else body.scrollTop = body.scrollHeight;
+  markRedo();
 }
 
 // ---------- carrying the talk on ----------
@@ -752,20 +796,198 @@ function tune() {
   const go = pane().querySelector<HTMLButtonElement>(".composer .go");
   const session = state.open ? state.sessions.get(state.open) : undefined;
   if (!box || !go || !session) return;
-  const busy = live?.session === session.id;
-  const elsewhere = !busy && session.activity === "running";
-  box.disabled = elsewhere;
-  box.placeholder = elsewhere ? (state.attached.size ? "붙인 조각을 다음 말에 실을 수 있습니다" : "다른 곳에서 작업 중인 세션입니다. 끝나면 여기서 이어 쓸 수 있습니다") : busy ? "답하는 중입니다" : CLIENT[session.client] + " 세션에 이어서 쓰기";
+  // A request said again goes to a fork, so it can be sent whatever the session itself is at.
+  const again = redo?.session === session.id;
+  const held = forking === session.id;
+  const busy = !again && live?.session === session.id;
+  const elsewhere = !again && !busy && session.activity === "running";
+  box.disabled = elsewhere || held;
+  box.placeholder = again ? "고친 요청을 적어 주세요" : elsewhere ? (state.attached.size ? "붙인 조각을 다음 말에 실을 수 있습니다" : "다른 곳에서 작업 중인 세션입니다. 끝나면 여기서 이어 쓸 수 있습니다") : busy ? "답하는 중입니다" : CLIENT[session.client] + " 세션에 이어서 쓰기";
   go.innerHTML = busy ? ICON.stop : ICON.send;
-  go.title = busy ? "멈추기" : "보내기";
+  go.title = again ? "갈라서 새 세션으로 보내기" : busy ? "멈추기" : "보내기";
   go.classList.toggle("stop", busy);
   // pieces can go by themselves; pictures and files go with words that say what is wanted of them
-  go.disabled = !busy && (elsewhere || !(box.value.trim() || (state.attached.size && !picked.length)));
-  if (!elsewhere && !busy && picked.length && !box.value.trim()) box.placeholder = "붙인 것과 함께 보낼 말을 적어 주세요";
+  go.disabled = held || (again ? !box.value.trim() : !busy && (elsewhere || !(box.value.trim() || (state.attached.size && !picked.length))));
+  if (!elsewhere && !busy && !again && picked.length && !box.value.trim()) box.placeholder = "붙인 것과 함께 보낼 말을 적어 주세요";
   const clip = pane().querySelector<HTMLButtonElement>(".composer .clip");
-  if (clip) clip.disabled = elsewhere || busy;
+  if (clip) clip.disabled = elsewhere || busy || held;
   const later = pane().querySelector<HTMLButtonElement>(".composer .later");
-  if (later) later.hidden = !state.attached.size; // setting pieces to wait starts no turn: it can be done whatever the session is at
+  if (later) later.hidden = !state.attached.size || again; // setting pieces to wait starts no turn: it can be done whatever the session is at
+}
+
+// ---------- saying a request again ----------
+
+/** The pieces that came with a request, as pieces that can be attached again: where each was cut from is known from
+ *  the line it left on the map (or, for one from another project, from the list of those). */
+async function cameWith(item: Said): Promise<Spec[]> {
+  const out: Spec[] = [];
+  for (const link of state.snap?.links ?? []) {
+    const { itemId, start, end, sessionId } = link.from;
+    if (link.kind !== "transfer" || link.to.itemId !== item.id || !itemId || start === undefined || end === undefined) continue;
+    const whole = await call<Item>("/api/item?id=" + encodeURIComponent(itemId)).catch(() => null);
+    out.push({ sessionId, itemId, start, end, text: whole?.text.slice(start, end) || link.excerpt || "", kind: whole?.kind ?? "answer", where: placeOf(sessionId) });
+  }
+  for (const far of state.snap?.far ?? []) {
+    const { itemId, start, end, sessionId, ...where } = far.other;
+    if (far.dir !== "in" || far.itemId !== item.id || !itemId || start === undefined || end === undefined) continue;
+    out.push({ sessionId, itemId, start, end, text: far.excerpt, kind: "answer", where });
+  }
+  return out;
+}
+
+/** Whether nothing was said in the open talk before a request, so that a fork made there would be given nothing. */
+function nothingBefore(item: string): boolean {
+  const session = state.open ? state.sessions.get(state.open) : undefined;
+  return session?.origin !== "fork" && [...texts.values()].find((one) => one.kind === "prompt")?.id === item;
+}
+
+/** The line over the box that says what sending will do while a request is being said again. */
+function drawRedo() {
+  const bar = pane().querySelector<HTMLElement>(".composer .redo-bar");
+  if (!bar) return;
+  const on = redo && redo.session === state.open ? redo : null;
+  bar.hidden = !on;
+  if (!on) return;
+  const item = texts.get(on.item);
+  bar.textContent = "";
+  const says = h("div", "");
+  says.append(h("b", "", "고쳐 보내기"), nothingBefore(on.item)
+    ? "첫 요청이어서 물려받을 대화가 없습니다. 같은 폴더와 모델의 새 세션으로 시작합니다."
+    : "이 요청 앞까지의 대화를 물려받은 새 세션이 갈라져 나옵니다. 이 세션은 그대로 남습니다.");
+  const lost = [item?.images ? "그림 " + item.images + "장" : "", item && filesIn(item.text).length ? "파일 " + filesIn(item.text).length + "개" : ""].filter(Boolean);
+  if (lost.length) says.append(h("span", "redo-lost", "함께 보냈던 " + lost.join(", ") + "은 따라가지 않습니다. 필요하면 다시 붙여 주세요."));
+  const cancel = h("button", "", "취소");
+  cancel.type = "button";
+  cancel.onclick = () => endRedo();
+  bar.append(says, cancel);
+}
+
+/** Mark, in the talk, the request being said again and what the fork will not know: everything from it onwards. */
+function markRedo() {
+  const body = part("talk");
+  if (!body) return;
+  body.querySelectorAll(".redoing, .after-redo").forEach((node) => node.classList.remove("redoing", "after-redo"));
+  if (!redo || redo.session !== state.open) return;
+  const target = body.querySelector<HTMLElement>(':scope > .msg.user[data-item="' + CSS.escape(redo.item) + '"]');
+  if (!target) return;
+  target.classList.add("redoing");
+  for (let node = target.nextElementSibling; node; node = node.nextElementSibling) if (!node.classList.contains("turn-live")) node.classList.add("after-redo");
+}
+
+/** Take a request up to say it again: its words go into the box and its pieces are attached, to be changed there.
+ *  same: it is sent as it is, at once (unless pictures or files went with it, which cannot be sent again from here). */
+async function beginRedo(item: Said, same = false) {
+  const session = state.sessions.get(item.sessionId);
+  if (!session || state.open !== session.id || forking) return;
+  let whole = texts.get(item.id) ?? item;
+  if (whole.more) {
+    const all = await call<Item>("/api/item?id=" + encodeURIComponent(item.id)).catch(() => null);
+    if (!all) return;
+    whole = all;
+    texts.set(item.id, all);
+  }
+  const pieces = await cameWith(whole);
+  const box = pane().querySelector<HTMLTextAreaElement>(".composer textarea");
+  if (!box || state.open !== session.id) return; // the pane has gone elsewhere meanwhile
+  redo = { session: session.id, item: item.id, draft: redo?.session === session.id ? redo.draft : box.value, attached: redo?.session === session.id ? redo.attached : [...state.attached] };
+  state.attached = new Set(pieces.map(keep));
+  if (pieces.length) keepBasket();
+  box.value = typedPart(whole.text);
+  drawBasket();
+  drawRedo();
+  markRedo();
+  box.dispatchEvent(new Event("input")); // the box takes the height of what is in it, and the button what can be done
+  if (same && !whole.images && !filesIn(whole.text).length) return void submitRedo(session.id);
+  box.focus();
+  box.setSelectionRange(box.value.length, box.value.length);
+}
+
+/** Give up saying a request again: the box is as it was. */
+function endRedo() {
+  const was = redo;
+  if (!was) return;
+  redo = null;
+  const box = pane().querySelector<HTMLTextAreaElement>(".composer textarea");
+  if (box && state.open === was.session) {
+    box.value = was.draft;
+    state.attached = new Set(was.attached.filter((id) => state.basket.some((piece) => piece.id === id)));
+    box.dispatchEvent(new Event("input"));
+  }
+  drawBasket();
+  drawRedo();
+  markRedo();
+  tune();
+}
+
+/** Wait until a session that has just been begun can be read: its client writes its record a moment after it begins. */
+async function seen(id: string): Promise<boolean> {
+  for (let tries = 0; tries < 24; tries += 1) {
+    await act.refresh();
+    if (state.sessions.has(id)) return true;
+    await new Promise((resolve) => window.setTimeout(resolve, 800));
+  }
+  return false;
+}
+
+/** Send the request that is being said again: to a fork of the session, which is then the talk that is open. */
+async function submitRedo(id: string) {
+  const box = pane().querySelector<HTMLTextAreaElement>(".composer textarea");
+  const body = part("talk");
+  const going = redo;
+  if (!box || !body || !going || going.session !== id || forking) return;
+  const text = box.value.trim();
+  if (!text) return;
+  const along = state.basket.filter((piece) => state.attached.has(piece.id));
+  const taken = picked;
+  body.querySelectorAll(":scope > .turn-error, :scope > .forking").forEach((node) => node.remove());
+  const sending = h("div", "turn-live forking");
+  const mine = h("div", "msg user");
+  const shown = sentPictures(taken);
+  if (shown) mine.append(shown);
+  mine.append(h("div", "text", text));
+  const others = taken.filter((one) => !one.url).length;
+  if (along.length || others) mine.append(h("div", "sent-note", [along.length ? "조각 " + along.length + "개" : "", others ? "파일 " + others + "개" : ""].filter(Boolean).join(", ") + "와 함께"));
+  const wait = h("div", "live");
+  wait.append(h("i", "pulse"), "갈라서 새 세션으로 보내는 중");
+  sending.append(mine, wait);
+  body.append(sending);
+  body.scrollTop = body.scrollHeight;
+  forking = id;
+  tune();
+  try {
+    const files = await wireFiles(taken);
+    const made = await post<{ turn: string; session: string }>("/api/fork", { project: state.snap!.project.id, session: id, item: going.item, text, pieces: along.map(wire), ...(files.length ? { files } : {}), ...(wantModel ? { model: wantModel } : {}) });
+    sent = { session: made.session, text, pieces: [], files: taken, taken: false };
+    for (const piece of along) state.on.add(home(piece.sessionId)); // so that the line to the fork is on the map
+    if (redo === going) {
+      redo = null;
+      box.value = "";
+      box.style.height = "auto";
+      picked = [];
+      wantModel = "";
+      state.attached.clear();
+      drawPicked();
+      drawBasket();
+      drawRedo();
+      markRedo();
+    }
+    const found = await seen(made.session);
+    forking = "";
+    if (found) state.on.add(made.session);
+    if (state.open !== id) return act.render(); // the pane has gone elsewhere meanwhile: the fork is on the map all the same
+    if (found) return act.openChat(made.session);
+    wait.remove();
+    sending.append(h("div", "turn-error", "세션은 갈라져 나왔지만 기록이 아직 보이지 않습니다. 잠시 뒤 ‘기록 다시 읽기’를 눌러 주세요."));
+    tune();
+  } catch (error) {
+    forking = "";
+    sending.remove();
+    if (state.open === id) {
+      body.append(h("div", "turn-error", "갈라 보내지 못했습니다: " + (error as Error).message));
+      body.scrollTop = body.scrollHeight;
+    }
+    tune();
+  }
 }
 
 /** The pieces that wait for this session's next prompt, in a line over the box; pressing it shows them. */
@@ -949,6 +1171,7 @@ function follow(id: string, turn: string) {
 async function submit(id: string) {
   const box = pane().querySelector<HTMLTextAreaElement>(".composer textarea");
   if (!box) return;
+  if (redo?.session === id) return submitRedo(id);
   if (live?.session === id) {
     // while an answer is under way the button stops it
     await post("/api/turn/stop", { turn: live.turn }).catch(() => {});
@@ -1001,6 +1224,8 @@ async function submit(id: string) {
 }
 
 function composer(form: HTMLFormElement, id: string) {
+  const redoBar = h("div", "redo-bar");
+  redoBar.hidden = true;
   const waitbar = h("button", "waitbar");
   waitbar.type = "button";
   waitbar.hidden = true;
@@ -1028,13 +1253,17 @@ function composer(form: HTMLFormElement, id: string) {
   foot.append(label);
   foot.hidden = true;
   row.append(clip, box, later, go);
-  form.append(waitbar, basket, files, row, foot, input);
+  form.append(redoBar, waitbar, basket, files, row, foot, input);
   box.oninput = () => {
     box.style.height = "auto";
     box.style.height = Math.min(140, box.scrollHeight) + "px";
     tune();
   };
   box.onkeydown = (event) => {
+    if (event.key === "Escape" && redo?.session === id) {
+      event.stopPropagation(); // Escape gives up saying the request again, and leaves the talk open
+      return endRedo();
+    }
     // Enter sends, Shift+Enter breaks the line; an Enter that only settles a Hangul syllable does neither
     if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
     event.preventDefault();
@@ -1448,13 +1677,7 @@ async function startNew() {
     state.attached.clear();
     for (const piece of along) state.on.add(home(piece.sessionId)); // so that the line to the new session is on the map
     drawBasket();
-    // the client writes the session's record a moment after it begins: wait until it can be read
-    let found = false;
-    for (let tries = 0; tries < 24 && !found; tries += 1) {
-      await act.refresh();
-      found = state.sessions.has(made.session);
-      if (!found) await new Promise((resolve) => window.setTimeout(resolve, 800));
-    }
+    const found = await seen(made.session);
     starting = false;
     if (found) state.on.add(made.session);
     if (state.fresh !== fresh) return act.render(); // the pane has gone elsewhere meanwhile: the session is on the map all the same
@@ -1616,6 +1839,7 @@ export async function drawChat(id: string, focus?: string, quiet = false, span?:
     box.textContent = "";
     dropPicked(); // what was picked was for the talk that was open
     wantModel = "";
+    redo = null;
     const form = h("form", "composer");
     composer(form, id);
     box.append(h("header", "chat-head"), h("div", "tabs"), h("div", "ties"), h("div", "talk"), h("div", "ctx"), form);

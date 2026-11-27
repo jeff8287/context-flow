@@ -2,7 +2,7 @@
 //   threads and their parents: ~/.codex/state_5.sqlite   (threads, thread_spawn_edges)
 //   sidebar projects:          ~/.codex/.codex-global-state.json   (local-projects, thread-project-assignments)
 //   what was said and changed: the thread's rollout file (one JSON record per line)
-import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
@@ -291,6 +291,87 @@ function parts(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content.map((part) => (part && typeof part.text === "string" ? part.text : "")).filter(Boolean).join("\n");
+}
+
+/** The file a thread's record is kept in, as the list of threads has it. */
+export function rolloutPathOf(thread: string, home = codexHome()): string | null {
+  const db = open(home);
+  if (!db) return null;
+  try {
+    const row = db.prepare("select rollout_path from threads where id = ?").get(thread) as { rollout_path: string | null } | undefined;
+    return row?.rollout_path ?? null;
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/** What a forked thread's record says of where it comes from: the thread, and how far into that thread's record its
+ *  history goes. Null when the record does not say (the thread is not a fork, or is one of an older kind). */
+function baseOf(path: string): { thread: string; end: number } | null {
+  try {
+    const first = JSON.parse(stretch(path, 0, 4_000_000).split("\n", 1)[0]); // the record's first line says what the thread is
+    const base = first?.type === "session_meta" ? first.payload?.history_base : null;
+    return base && typeof base.thread_id === "string" && Number.isInteger(base.end_byte_offset) ? { thread: base.thread_id, end: base.end_byte_offset } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A stretch of a file, as text. A record can be very long: it is not read whole for the sake of a few lines. */
+function stretch(path: string, from: number, to: number): string {
+  const file = openSync(path, "r");
+  try {
+    const room = Buffer.alloc(Math.max(0, to - from));
+    return room.subarray(0, readSync(file, room, 0, room.length, from)).toString("utf8");
+  } finally {
+    closeSync(file);
+  }
+}
+
+/** The last turn a record tells of in its first so many bytes. It is looked for from the end backwards. */
+function lastTurnWithin(path: string, end: number): string | null {
+  try {
+    for (let to = Math.min(end, statSync(path).size); to > 0; ) {
+      const from = Math.max(0, to - 1_000_000);
+      const lines = stretch(path, from, to).split("\n");
+      const whole = from === 0 ? lines : lines.slice(1); // the first of them may begin before the stretch
+      for (const line of whole.reverse()) {
+        if (!line.includes('"turn_id"')) continue;
+        try {
+          const turn = JSON.parse(line)?.payload?.turn_id;
+          if (typeof turn === "string") return turn;
+        } catch { /* a line cut short by the end */ }
+      }
+      // further back, taking the line that was left out along; a line longer than the stretch tells of no turn
+      const kept = from === 0 ? 0 : Buffer.byteLength(lines[0], "utf8");
+      to = kept < to - from ? from + kept : from;
+    }
+  } catch { /* not to be read */ }
+  return null;
+}
+
+/** Where a thread is to be forked so that the fork is the thread as it stood before one of its requests: the thread
+ *  to fork and the last of its turns to keep. Null: nothing was said before that request. Undefined: the record does
+ *  not tell.
+ *  items: the thread's own, in the order they were said. A thread that is itself a fork keeps what it was given in
+ *  the record of the thread it came from: before its own first request stands that thread, up to where the fork was
+ *  made, and that is then the thread to fork. pathOf: where a thread's record is kept. */
+export function forkPoint(session: Session, items: Item[], prompt: Item, pathOf: (thread: string) => string | null = rolloutPathOf): { from: string; at: string } | null | undefined {
+  if (!prompt.turnId) return undefined; // an older record, which does not say which turn is which
+  const before = items.slice(0, items.indexOf(prompt)).findLast((item) => item.turnId && item.turnId !== prompt.turnId);
+  if (before?.turnId) return { from: session.id, at: before.turnId };
+  if (session.origin !== "fork") return null;
+  let path = session.recordPath;
+  for (let guard = 0; path && guard < 8; guard += 1) {
+    const base = baseOf(path);
+    if (!base) return undefined;
+    path = pathOf(base.thread);
+    const at = path ? lastTurnWithin(path, base.end) : null;
+    if (at) return { from: base.thread, at };
+  }
+  return undefined;
 }
 
 /** Fill in what only the rollout knows: counts, activity, the file being changed, a fork's parent. */

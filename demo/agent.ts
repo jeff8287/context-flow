@@ -28,7 +28,7 @@ const typedOf = (prompt: string) => withoutPieces(prompt).trim();
 /** The files the request says were sent with it: the agent is told where they lie, and looks whether it can read them. */
 const filesOf = (prompt: string) => filesIn(prompt).map((path) => basename(path) + " (" + (existsSync(path) ? size(statSync(path).size) + ", 읽을 수 있습니다" : "읽을 수 없습니다") + ")");
 /** What came with a request besides words and pieces: pictures (each said by its kind and size) and the model asked for. */
-interface Extra { pictures: string[]; model?: string }
+interface Extra { pictures: string[]; model?: string; kept?: number }
 const wantsEdit = (prompt: string) => /고쳐|수정|적어|edit/i.test(typedOf(prompt));
 
 /** What the client's hook gives for this prompt: the pieces set to wait for the session, handed over the way the
@@ -50,6 +50,8 @@ function answer(prompt: string, added: string, edited: "done" | "refused" | null
   const pieces = [...(prompt + "\n" + added).matchAll(PIECE)].map((found) => ({ from: found[2], kind: found[3], text: found[4] }));
   const typed = typedOf(prompt);
   const out = ["(데모 에이전트의 답입니다. 실제 모델은 돌지 않고, 받은 것을 그대로 되짚어 말합니다.)", ""];
+  // a session forked from another knows what was said in that one up to where it was forked, and nothing after
+  if (extra.kept !== undefined) out.push("갈라져 나온 세션입니다. 원래 대화에서 요청 " + extra.kept + "개와 그 답까지를 물려받았고, 그 뒤에 오간 말은 모릅니다.", "");
   out.push(typed ? "요청: “" + short(typed, 120) + "”" : "요청 글 없이 조각만 받았습니다.", "");
   if (pieces.length) {
     out.push("함께 받은 조각 " + pieces.length + "개:");
@@ -115,6 +117,9 @@ function asClaude(args: string[]): void {
   const flag = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
   const fresh = flag("--session-id");
   const session = fresh ?? flag("--resume") ?? "";
+  // --resume <other> --fork-session --session-id <new> --resume-session-at <record>: the other session, carried on
+  // under an id of its own from the answer that record holds
+  const forked = args.includes("--fork-session") ? { from: flag("--resume") ?? "", at: flag("--resume-session-at") ?? "" } : null;
   const cwd = process.cwd();
   const out = (value: unknown) => process.stdout.write(JSON.stringify(value) + "\n");
   const waiting = new Map<string, (allow: boolean) => void>();
@@ -141,6 +146,21 @@ function asClaude(args: string[]): void {
     const extra: Extra = { pictures: pictures.map((block) => String(block.source?.media_type) + " " + size(Buffer.from(String(block.source?.data ?? ""), "base64").length)), ...(model && model !== MODEL.claude ? { model } : {}) };
     const record = transcriptPath(cwd, session);
     if (!fresh && !existsSync(record)) return out({ type: "result", is_error: true, result: "No conversation found with session ID: " + session });
+    if (forked) {
+      // As Claude Code does: the fork's record says which session it comes from, and begins with that session's
+      // records up to the one named, each a copy under the fork's id.
+      const other = transcriptPath(cwd, forked.from);
+      if (!existsSync(other)) return out({ type: "result", is_error: true, result: "No conversation found with session ID: " + forked.from });
+      const rows = readFileSync(other, "utf8").split("\n").filter(Boolean).map((row) => JSON.parse(row));
+      const upTo = rows.findIndex((row) => row.uuid === forked.at);
+      if (upTo === -1) return out({ type: "result", is_error: true, result: "No message found with message.uuid of: " + forked.at });
+      const copied = rows.slice(0, upTo + 1).filter((row) => typeof row.uuid === "string").map((row) => ({ ...row, sessionId: session }));
+      // a fork of a fork names the whole way it came, the session it was forked from last
+      const way = [...(rows.find((row) => row.type === "derived-from")?.sessions ?? []), { type: "claude_code_session", id: forked.from, via: "fork" }];
+      mkdirSync(dirname(record), { recursive: true });
+      writeFileSync(record, line({ type: "derived-from", v: 1, sessionId: session, sessions: way }) + copied.map(line).join(""));
+      extra.kept = copied.filter((row) => row.type === "user" && !row.toolUseResult && (typeof row.message?.content === "string" || (Array.isArray(row.message?.content) && !row.message.content.some((block: any) => block?.type === "tool_result")))).length;
+    }
     const added = hooked(session, prompt, cwd, record);
     claudeRecord(session, cwd, claudeAsked(prompt, added, pictures));
     let edited: "done" | "refused" | null = null;
@@ -172,15 +192,38 @@ function asClaude(args: string[]): void {
 
 // ---------- as the Codex app server, run by the tool ----------
 
+/** How far into a thread's record a fork of it goes that keeps its turns up to one of them: to the end of the last
+ *  line that tells of that turn (to the end of the record when no turn is named). Null when the turn is not there. */
+function endOf(thread: string, lastTurn: string | null): number | null {
+  const whole = readFileSync(rolloutPath(thread));
+  if (!lastTurn) return whole.length;
+  let end: number | null = null;
+  let at = 0;
+  for (const row of whole.toString("utf8").split("\n")) {
+    at += Buffer.byteLength(row) + 1;
+    if (row.includes('"turn_id":' + JSON.stringify(lastTurn))) end = Math.min(at, whole.length);
+  }
+  return end;
+}
+/** How many requests a thread's record holds in its first so many bytes, with those the thread was itself given when
+ *  it was forked. */
+function keptIn(thread: string, end: number): number {
+  const rows = readFileSync(rolloutPath(thread)).subarray(0, end).toString("utf8").split("\n").filter(Boolean).map((row) => { try { return JSON.parse(row); } catch { return null; } });
+  const base = rows[0]?.payload?.history_base;
+  return rows.filter((row) => row?.payload?.type === "item_completed" && row.payload.item?.type === "UserMessage").length + (base ? keptIn(base.thread_id, base.end_byte_offset) : 0);
+}
+
 function asCodex(): void {
   const out = (value: unknown) => process.stdout.write(JSON.stringify(value) + "\n");
   const waiting = new Map<number, (allow: boolean) => void>();
   let serial = 100;
-  let thread: { id: string; cwd: string } | null = null;
+  let thread: { id: string; cwd: string; kept?: number } | null = null;
   const turn = async (id: number, prompt: string, pictures: { type: string; path: string }[], model: string | undefined) => {
     if (!thread) return out({ id, error: { message: "no thread" } });
     const kinds: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
     const extra: Extra = { pictures: pictures.map((one) => (kinds[one.path.split(".").pop()?.toLowerCase() ?? ""] ?? "image") + " " + (existsSync(one.path) ? size(statSync(one.path).size) : "(읽을 수 없음)")), ...(model ? { model } : {}) };
+    if (thread.kept !== undefined) extra.kept = thread.kept; // said once, in the fork's first answer
+    delete thread.kept;
     const turnId = "turn-" + Date.now().toString(36);
     out({ id, result: { turn: { id: turnId } } });
     const db = threads();
@@ -242,6 +285,31 @@ function asCodex(): void {
         .run(id, rolloutPath(id), cwd, String(params.model ?? MODEL.codex), now, now);
       db.close();
       thread = { id, cwd };
+      out({ id: message.id, result: { thread: { id } } });
+    } else if (message.method === "thread/fork") {
+      // As the real server does: the fork is a thread of its own whose record says which thread it comes from and how
+      // far into that thread's record its history goes. Nothing of the other thread is copied.
+      const db = threads();
+      const row = db.prepare("select id, cwd, model from threads where id = ?").get(String(params.threadId ?? "")) as { id: string; cwd: string; model: string } | undefined;
+      if (!row) {
+        db.close();
+        return out({ id: message.id, error: { message: "no rollout found for thread id " + params.threadId } });
+      }
+      const end = endOf(row.id, typeof params.lastTurnId === "string" ? params.lastTurnId : null);
+      if (end === null) {
+        db.close();
+        return out({ id: message.id, error: { message: "turn not found in thread: " + params.lastTurnId } });
+      }
+      const id = "0de0" + randomUUID().slice(4);
+      const cwd = String(params.cwd ?? row.cwd);
+      const model = String(params.model ?? row.model ?? MODEL.codex);
+      const now = Date.now();
+      writeFileSync(rolloutPath(id), line({ timestamp: iso(now), type: "session_meta", payload: { id, cwd, forked_from_id: row.id, history_mode: "paginated", history_base: { thread_id: row.id, end_byte_offset: end } } })
+        + line({ timestamp: iso(now), type: "turn_context", payload: { cwd, model, approval_policy: params.approvalPolicy ?? "on-request", sandbox_policy: { type: params.sandbox ?? "workspace-write" } } }));
+      db.prepare("insert into threads (id, rollout_path, cwd, title, name, model, created_at_ms, updated_at_ms, thread_source, source, archived, first_user_message, attached_thread_parent_id) values (?, ?, ?, '', null, ?, ?, ?, null, 'cli', 0, '', null)")
+        .run(id, rolloutPath(id), cwd, model, now, now);
+      db.close();
+      thread = { id, cwd, kept: keptIn(row.id, end) };
       out({ id: message.id, result: { thread: { id } } });
     } else if (message.method === "thread/resume") {
       const db = threads();

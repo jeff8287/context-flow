@@ -8,6 +8,8 @@ import type { AddressInfo } from "node:net";
 import { userInfo } from "node:os";
 import { basename, extname, join, normalize } from "node:path";
 import { HOME } from "./home.ts";
+import { answerBefore } from "./claude.ts";
+import { forkPoint, rolloutPathOf } from "./codex.ts";
 import { makeBundle, maskBundle, type Spot } from "./bundle.ts";
 import { freshPlan } from "./fresh.ts";
 import { filesNote, pieceBlock, withBlocks } from "./links.ts";
@@ -17,7 +19,7 @@ import { buildSnapshot, findProjects, nearestProject, readCodexProjects, type Bu
 import { standalonePage } from "./standalone.ts";
 import { appendTransfers, dropPending, queuePieces, readBasket, saveUploads, takePending, tidyStore, writeBasket, type Pending } from "./store.ts";
 import { tracePiece } from "./trace.ts";
-import { listModels, startNew, startTurn, type Along, type Turn } from "./talk.ts";
+import { listModels, startFork, startNew, startTurn, type Along, type Turn } from "./talk.ts";
 import { oneLine } from "./util.ts";
 import { grown, Interest, watchRecords, type Changed } from "./watch.ts";
 
@@ -270,6 +272,59 @@ export function serve(port: number, webDir: string): Served {
           try {
             const session = await Promise.race([ready, new Promise<string>((_, reject) => setTimeout(() => reject(new Error("새 세션이 시작되지 않았습니다")), 20_000))]);
             return send(200, { turn: turn.id, session, client, cwd, model: like?.model ?? null });
+          } catch (error) {
+            if (!turn.done) turn.stop();
+            return send(502, { error: String(error instanceof Error ? error.message : error) });
+          }
+        }
+        if (url.pathname === "/api/fork") {
+          // Say one of a session's requests again, in other words or the same. What was said stays said: the session
+          // is forked as it stood before that request (by its own client), and the fork is given the new request. On
+          // the map it is a session of its own, with the line of a fork from the session it came out of.
+          const text = typeof asked.text === "string" ? asked.text.trim() : "";
+          const picked = Array.isArray(asked.pieces) ? (asked.pieces as Record<string, unknown>[]) : [];
+          if (!text) return send(400, { error: "고쳐 보낼 말을 적어 주세요" });
+          const made = await read(String(asked.project ?? ""));
+          const session = made?.snapshot.sessions.find((one) => one.id === asked.session);
+          if (!made || !session) return send(404, { error: "그런 세션이 없습니다" });
+          if (session.origin === "subagent" || session.origin === "side") return send(400, { error: "다른 세션에 딸린 대화는 갈라 낼 수 없습니다" });
+          const prompt = made.bodies.get(String(asked.item ?? ""));
+          if (!prompt || prompt.sessionId !== session.id || prompt.kind !== "prompt") return send(404, { error: "고칠 요청을 기록에서 찾지 못했습니다. 기록을 다시 읽은 뒤 해 주세요" });
+          if (!existsSync(session.cwd)) return send(400, { error: "세션이 일하던 폴더가 없습니다: " + session.cwd });
+          // Where the session is to be forked: each client names the place in its own way.
+          let point: { from: string; at: string } | null | undefined;
+          if (session.client === "claude") {
+            const at = session.recordPath && prompt.turnId ? await answerBefore(session.recordPath, prompt.turnId) : undefined;
+            point = typeof at === "string" ? { from: session.id, at } : at;
+          } else {
+            const nth = (item: { id: string }) => Number(item.id.slice(item.id.lastIndexOf(":") + 1));
+            const own = [...made.bodies.values()].filter((item) => item.sessionId === session.id).sort((one, other) => nth(one) - nth(other));
+            point = forkPoint(session, own, prompt, (thread) => made.snapshot.sessions.find((one) => one.id === thread)?.recordPath ?? rolloutPathOf(thread));
+          }
+          if (point === undefined) return send(400, { error: "이 요청 앞에서 대화를 갈라 낼 곳을 기록에서 찾지 못했습니다" });
+          const now = Date.now();
+          const pieces = await cut(read, made, picked, { sessionId: "", where: placeOf(made, { projectId: session.projectId, title: oneLine(text, 80), client: session.client }) }, now);
+          if (!pieces) return send(400, { error: "붙인 조각을 기록에서 찾지 못했습니다. 기록을 다시 읽은 뒤 담아 주세요" });
+          let more: ReturnType<typeof alongOf>;
+          try {
+            more = alongOf(asked);
+          } catch (error) {
+            return send(400, { error: String(error instanceof Error ? error.message : error) });
+          }
+          const { turn, ready } = startFork(session, point, withBlocks(text + more.note, pieces.map((piece) => pieceBlock(piece.block))), more.along);
+          turns.set(turn.id, turn);
+          follow(turn);
+          let kept = false;
+          turn.listen((event) => {
+            if (kept || event.t === "prompt" || !turn.sessionId) return;
+            kept = true;
+            if (event.t === "done" && !event.ok) return;
+            appendTransfers(pieces.map((piece) => ({ ...piece.transfer, to: { ...piece.transfer.to, sessionId: turn.sessionId } })));
+          });
+          try {
+            const fork = await Promise.race([ready, new Promise<string>((_, reject) => setTimeout(() => reject(new Error("갈라 낸 세션이 시작되지 않았습니다")), 20_000))]);
+            // from: the session the fork's record will name as the one it came out of; null when nothing was kept
+            return send(200, { turn: turn.id, session: fork, from: point?.from ?? null });
           } catch (error) {
             if (!turn.done) turn.stop();
             return send(502, { error: String(error instanceof Error ? error.message : error) });

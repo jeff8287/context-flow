@@ -7,9 +7,9 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { answer, makeBundle, maskBundle, readBundle } from "../src/bundle.ts";
-import { folderName, readClaudeSessions } from "../src/claude.ts";
+import { answerBefore, folderName, readClaudeSessions } from "../src/claude.ts";
 import { freshPlan } from "../src/fresh.ts";
-import { applyRollout, readRollout } from "../src/codex.ts";
+import { applyRollout, forkPoint, readRollout } from "../src/codex.ts";
 import { hookStates } from "../src/hooks.ts";
 import { farLinks, FILES_NOTE, filesIn, filesNote, overlaps, pieceBlock, recordedLinks, transferLinks, withBlocks, withoutPieces, withPieces } from "../src/links.ts";
 import { readClaudeLive, settleActivity, type ClaudeLive, type Live } from "../src/live.ts";
@@ -903,4 +903,70 @@ test("what was typed in a message is known apart from the list of files that wen
   assert.deepEqual(filesIn(typed), []);
   // the words alone, when somebody happens to type them, are not a list of files
   assert.equal(withoutPieces("그 말은 " + FILES_NOTE + " 라는 뜻"), "그 말은 " + FILES_NOTE + " 라는 뜻");
+});
+
+test("a Claude Code session forked from another begins with copies of that one's records: they are the other's, and the fork is what was said in it", async () => {
+  const home = join(scratchDir, "claude-fork");
+  const cwd = "/work/forked";
+  const dir = join(home, "projects", folderName(cwd));
+  mkdirSync(dir, { recursive: true });
+  const user = (id: string, uuid: string, at: string, content: string) => ({ type: "user", uuid, sessionId: id, cwd, timestamp: at, message: { role: "user", content } });
+  const agent = (id: string, uuid: string, at: string, text: string) => ({ type: "assistant", uuid, sessionId: id, cwd, timestamp: at, message: { role: "assistant", model: "claude-x", stop_reason: "end_turn", content: [{ type: "text", text }] } });
+  const base = [user("base", "u1", "2026-01-01T00:00:00Z", "암호는 moonstone"), agent("base", "a1", "2026-01-01T00:00:05Z", "알겠습니다"),
+    user("base", "u2", "2026-01-01T00:01:00Z", "이제 잊어"), agent("base", "a2", "2026-01-01T00:01:05Z", "네")];
+  writeFileSync(join(dir, "base.jsonl"), base.map(line).join(""));
+  // the fork: where it comes from, the other's first turn under the fork's id, then what was said in the fork itself
+  writeFileSync(join(dir, "fork.jsonl"), line({ type: "derived-from", v: 1, sessionId: "fork", sessions: [{ type: "claude_code_session", id: "base", via: "fork" }] })
+    + base.slice(0, 2).map((row) => line({ ...row, sessionId: "fork" })).join("")
+    + line(user("fork", "u3", "2026-01-01T00:02:00Z", "암호가 뭐였지?")) + line(agent("fork", "a3", "2026-01-01T00:02:05Z", "moonstone")));
+  const project: Project = { id: "p", name: "forked", roots: [cwd] };
+  const { transcripts } = await readClaudeSessions(project, home, Date.parse("2026-01-01T01:00:00Z"));
+  const fork = transcripts.find((one) => one.session.id === "fork")!;
+  assert.deepEqual([fork.session.origin, fork.session.parentId, fork.session.title], ["fork", "base", "암호가 뭐였지?"]);
+  // its items keep the numbers their records give them, whatever is left out
+  assert.deepEqual(fork.items.map((item) => [item.id, item.kind, item.text]), [["fork:2", "prompt", "암호가 뭐였지?"], ["fork:3", "answer", "moonstone"]]);
+  assert.equal(fork.session.startedAt, Date.parse("2026-01-01T00:02:00Z"));
+  assert.deepEqual(transcripts.find((one) => one.session.id === "base")!.items.length, 4);
+  assert.deepEqual(recordedLinks(transcripts.map((one) => one.session)).links.map((link) => [link.kind, link.from.sessionId, link.to.sessionId]), [["fork", "base", "fork"]]);
+  // where a session is carried on from, to say one of its requests again: the record of the last answer before it
+  assert.equal(await answerBefore(join(dir, "base.jsonl"), "u2"), "a1");
+  assert.equal(await answerBefore(join(dir, "base.jsonl"), "u1"), null); // nothing was said before the first
+  assert.equal(await answerBefore(join(dir, "base.jsonl"), "nowhere"), undefined);
+  // in the fork, before its own first request stands the copy of the other's answer
+  assert.equal(await answerBefore(join(dir, "fork.jsonl"), "u3"), "a1");
+  // A fork of the fork, made before the fork's own request: its record names the whole way it came, the nearest last,
+  // and begins with the same copies. It is a fork of the fork, and nothing of either is its own.
+  writeFileSync(join(dir, "again.jsonl"), line({ type: "derived-from", v: 1, sessionId: "again", sessions: [{ type: "claude_code_session", id: "base", via: "fork" }, { type: "claude_code_session", id: "fork", via: "fork" }] })
+    + base.slice(0, 2).map((row) => line({ ...row, sessionId: "again" })).join("") + line(user("again", "u4", "2026-01-01T00:03:00Z", "암호는 몇 글자지?")) + line(agent("again", "a4", "2026-01-01T00:03:05Z", "9")));
+  const later = (await readClaudeSessions(project, home, Date.parse("2026-01-01T01:00:00Z"))).transcripts.find((one) => one.session.id === "again")!;
+  assert.deepEqual([later.session.origin, later.session.parentId, later.items.map((item) => item.text).join(" / ")], ["fork", "fork", "암호는 몇 글자지? / 9"]);
+});
+
+test("a Codex thread is forked after the turn before the request to be said again; a fork's own first request, where the fork itself was made", () => {
+  const dir = join(scratchDir, "codex-fork");
+  mkdirSync(dir, { recursive: true });
+  const item = (turn: string, kind: Item["kind"], n: number, of = "base"): Item => ({ id: of + ":" + n, sessionId: of, turnId: turn, kind, at: n, text: kind + " " + n });
+  const own = [item("t1", "prompt", 0), item("t1", "answer", 1), item("t2", "prompt", 2), item("t2", "change", 3), item("t2", "answer", 4), item("t3", "prompt", 5)];
+  const base = session("base");
+  assert.deepEqual(forkPoint(base, own, own[5]), { from: "base", at: "t2" });
+  assert.deepEqual(forkPoint(base, own, own[2]), { from: "base", at: "t1" });
+  assert.equal(forkPoint(base, own, own[0]), null); // nothing before the first request: there is nothing to keep
+  assert.equal(forkPoint(base, [{ ...own[0], turnId: null }], { ...own[0], turnId: null }), undefined); // an older record does not say
+  // The base's record, and a fork of it that keeps its first two turns: the fork's record says how far into the base's its history goes.
+  const turnLine = (turn: string, type: string) => line({ timestamp: "2026-01-01T00:00:00Z", type: "event_msg", payload: { type, turn_id: turn } });
+  const kept = line({ type: "session_meta", payload: { id: "base" } }) + turnLine("t1", "task_started") + turnLine("t1", "task_complete") + turnLine("t2", "task_started") + line({ type: "response_item", payload: { type: "message", content: "한글이 든 줄 " + "가".repeat(400) } }) + turnLine("t2", "task_complete");
+  writeFileSync(join(dir, "base.jsonl"), kept + turnLine("t3", "task_started") + turnLine("t3", "task_complete"));
+  writeFileSync(join(dir, "fork.jsonl"), line({ type: "session_meta", payload: { id: "fork", forked_from_id: "base", history_base: { thread_id: "base", end_byte_offset: Buffer.byteLength(kept) } } }) + turnLine("f1", "task_started"));
+  const pathOf = (thread: string) => (thread === "base" || thread === "fork" ? join(dir, thread + ".jsonl") : null);
+  const fork = session("fork", { origin: "fork", parentId: "base", recordPath: join(dir, "fork.jsonl") });
+  const first = item("f1", "prompt", 0, "fork");
+  assert.deepEqual(forkPoint(fork, [first, item("f1", "answer", 1, "fork")], first, pathOf), { from: "base", at: "t2" });
+  // a fork of that fork, made before anything was said in it: its history is still the base's
+  writeFileSync(join(dir, "again.jsonl"), line({ type: "session_meta", payload: { id: "again", forked_from_id: "fork", history_base: { thread_id: "fork", end_byte_offset: Buffer.byteLength(readFileSync(join(dir, "fork.jsonl"), "utf8").split("\n")[0]) + 1 } } }));
+  const again = session("again", { origin: "fork", parentId: "fork", recordPath: join(dir, "again.jsonl") });
+  const theirs = item("g1", "prompt", 0, "again");
+  assert.deepEqual(forkPoint(again, [theirs], theirs, (thread) => (thread === "again" ? join(dir, "again.jsonl") : pathOf(thread))), { from: "base", at: "t2" });
+  // a fork whose record does not say where its history ends is not guessed at
+  writeFileSync(join(dir, "old.jsonl"), line({ type: "session_meta", payload: { id: "old", forked_from_id: "base" } }));
+  assert.equal(forkPoint(session("old", { origin: "fork", parentId: "base", recordPath: join(dir, "old.jsonl") }), [theirs], theirs, pathOf), undefined);
 });
