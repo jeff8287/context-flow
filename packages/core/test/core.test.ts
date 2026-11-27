@@ -1176,3 +1176,38 @@ test("a Codex thread whose request was said again in the app is read back throug
   const alone = (await readRollout(T, lost, recordFiles(home)))!;
   assert.deepEqual([alone.base, alone.items.map((item) => item.id.slice(T.length + 1))], [null, ["3000000", "3000001"]]); // its numbers are still its own
 });
+
+test("what a fork was given when it was made is not pasted into it; what its parent said after that place can be", () => {
+  forgetPastes();
+  const first = "좌석 예약이 겹치는 까닭은 읽기와 쓰기 사이에 잠금이 없기 때문입니다. 두 요청이 같은 좌석을 동시에 읽으면 둘 다 비어 있다고 보고, 둘 다 예약 행을 넣습니다.";
+  const later = "유일 제약을 건 뒤에는 스무 번을 돌려도 한 번도 겹치지 않았습니다. 제약에 걸린 요청은 409와 SEAT_TAKEN을 돌려받고, 화면은 좌석 목록을 새로 불러와야 합니다.";
+  const elsewhere = "배포 전에 기존 중복 행을 먼저 지워야 합니다. 그러지 않으면 유일 제약을 거는 마이그레이션이 실패하고, 되돌리려면 수동으로 인덱스를 지워야 합니다.";
+  // a session of two requests; forks of it
+  const base = [say("a", 0, "prompt", 100, "왜 겹치지?"), say("a", 1, "answer", 110, first), say("a", 2, "prompt", 200, "고친 뒤는?"), say("a", 3, "answer", 210, later)];
+  const fork = (id: string, at: number, parent = "a") => session(id, { origin: "fork", parentId: parent, startedAt: at });
+  const sessions = [session("a"), session("s"), fork("edit", 900), fork("end", 300), fork("early", 150), fork("deep", 950, "edit"), session("copy", { origin: "imported", parentId: "a", startedAt: 50 })];
+  const items = [...base,
+    say("s", 0, "prompt", 120, "다른 일"), say("s", 1, "answer", 130, elsewhere), say("s", 2, "answer", 250, first), // another session says the first answer over again, later
+    // made before the second request, long after it was said: it was given the first answer, and not the second
+    say("edit", 0, "prompt", 910, first), say("edit", 1, "prompt", 920, later), say("edit", 2, "prompt", 930, elsewhere),
+    // made after all that was said: it was given both
+    say("end", 0, "prompt", 310, first + "\n" + later),
+    // made after the first turn, with no word of where: what its parent said after it began was not given to it
+    say("early", 0, "prompt", 500, later), say("early", 1, "prompt", 510, first),
+    // a fork of the first fork, made before anything was said in it: given what that fork was given, and no more
+    say("deep", 0, "prompt", 960, first), say("deep", 1, "prompt", 970, later),
+    // a copy has all that the session it was copied from says, whenever that was said
+    say("copy", 0, "prompt", 980, later),
+  ];
+  const before = new Map([["edit", "a:2"], ["deep", "edit:0"]]); // the request each was made before, where that is known
+  const found = pasteLinks(items, sessions, "", before).map((link) => link.id).sort();
+  assert.deepEqual(found, [
+    "paste:a:3>deep:1", // the second answer was never given to the fork of the fork
+    "paste:a:3>early:0", // said by the parent after the fork had begun
+    "paste:a:3>edit:1", // the second answer, typed into the fork that was made before it
+    "paste:s:1>edit:2", // what a session it has nothing to do with said is pasted as it ever was
+  ]);
+  // (The first answer typed into a fork that was given it is no paste, though another session said the same since: the
+  // fork had it from its parent. Nor is anything a paste into a fork that was given all of it, or into a copy.)
+  assert.ok(!found.some((id) => id.includes(">edit:0") || id.includes(">end:") || id.includes(">early:1") || id.includes(">deep:0") || id.includes(">copy:")));
+});

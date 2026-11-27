@@ -297,7 +297,7 @@ npm run service -- uninstall    # 내리고 그 파일을 지웁니다
 
 ```sh
 npm run check     # 타입 검사 (코어, 화면, 데모)
-npm test          # 시험 53개. 모두 지어낸 기록으로 돕니다
+npm test          # 시험 54개. 모두 지어낸 기록으로 돕니다
 npm run build     # 화면 빌드
 ```
 
