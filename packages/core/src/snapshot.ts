@@ -119,7 +119,7 @@ async function readProject(project: Project, assigned: Map<string, string>, now:
 
 /** What a fork's own record says of where it was made. base (Codex): the thread its history lies in and how far
  *  into that thread's record it goes. request (Claude Code): the last request it was given. */
-interface Fork { base?: { thread: string; end: number }; request?: string }
+interface Fork { base?: { thread: string; file: string; end: number }; request?: string }
 
 /** One project as the screen sees it; or several put on one map, as one: every session of any of them, and what
  *  ties them, across the projects as within them. A session that lies in more than one of them (a project's folder
@@ -152,15 +152,16 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
   if (many) for (const session of sessions) session.projectId = (nearestProject(session.cwd, holders.get(session.id)!) ?? holders.get(session.id)![0]).id;
   const whole: Project = many ? { id: projects.map((one) => one.id).join(","), name: projects.map((one) => one.name).join(" + "), roots: [...new Set(projects.flatMap((one) => one.roots))] } : projects[0];
   sessions.sort((a, b) => a.startedAt - b.startedAt);
-  // Where each fork was made, in its parent's talk. A Codex fork says how far into the record of a thread its history
+  // Where each fork was made, in its parent's talk. A Codex fork says how far into a file of a thread its history
   // goes: when that thread is its parent, the last turn before that place is the last it keeps.
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const kept = new Map<string, Kept>();
   for (const [id, fork] of forks) {
     const parent = byId.get(byId.get(id)?.parentId ?? "");
     if (fork.request) kept.set(id, { request: fork.request });
-    else if (fork.base && parent?.recordPath && fork.base.thread === parent.id) {
-      const turn = keptTurn(parent.recordPath, fork.base.end);
+    else if (fork.base && parent && fork.base.thread === parent.id) {
+      // (the file the fork names: the parent's record may have been begun anew since, when a request of it was said again)
+      const turn = keptTurn(fork.base.file, fork.base.end);
       if (turn) kept.set(id, { turn });
     }
   }

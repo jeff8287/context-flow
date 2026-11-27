@@ -2,7 +2,11 @@
 //   threads and their parents: ~/.codex/state_5.sqlite   (threads, thread_spawn_edges)
 //   sidebar projects:          ~/.codex/.codex-global-state.json   (local-projects, thread-project-assignments)
 //   what was said and changed: the thread's rollout file (one JSON record per line)
-import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+// A thread's record can lie in several files. When a request is said again in the app, or a thread is forked, a new
+// file is begun whose first line says where its history lies: in which file, and how far into it (history_base).
+// The file is named by an id of its own: the one at the end of its name, or the thread's when its name has none.
+// So a thread's talk is read back through the files of its own, and a fork's begins where another thread's file is named.
+import { closeSync, createReadStream, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
@@ -177,8 +181,11 @@ export function readCodexThreads(project: Project, assigned: Map<string, string>
 export interface Rollout {
   items: Item[];
   forkedFrom: string | null;
-  /** For a fork: the thread its history lies in, and how far into that thread's record it goes. Null when the record does not say. */
-  base: { thread: string; end: number } | null;
+  /** For a fork: the thread its history lies in, the file of that thread it names, and how far into that file it
+   *  goes. Null when the record does not say, or the file it names is not to be found. */
+  base: { thread: string; file: string; end: number } | null;
+  /** The files the thread's own talk lies in, the oldest first; of all but the last, only what lies before end. */
+  files: { path: string; end?: number }[];
   /** A turn was started and the record does not say it ended. */
   open: boolean;
   /** When the last turn was started. */
@@ -186,26 +193,164 @@ export interface Rollout {
   lastAt: number;
 }
 
-const cache = new Map<string, { size: number; mtime: number; rollout: Rollout }>();
+/** Where the record files are: which file an id names, and where a file stands among its thread's files. */
+export interface RecordFiles {
+  /** The file with that id of its own, and the thread it is a file of. */
+  fileOf(own: string): { thread: string; path: string } | null;
+  /** Which of its thread's files it is, counted from the oldest (0); -1 when that is not known. */
+  seqOf(path: string): number;
+}
 
-/** What one thread said and changed. Reads the file once and again only when it has grown. */
-export async function readRollout(sessionId: string, path: string): Promise<Rollout | null> {
+const NAMED = /rollout-(?:(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-)?([0-9a-f]{8}-[0-9a-f-]{27})(?:_([0-9a-f]{8}-[0-9a-f-]{27}))?\.jsonl$/;
+const indexes = new Map<string, { at: number; byOwn: Map<string, { thread: string; path: string }>; seq: Map<string, number> }>();
+/** What was asked for and not found, for each place the files are kept in. */
+const missing = new Map<string, Set<string>>();
+
+/** The record files Codex keeps, found by their names. They are looked for again when one that is asked for is not
+ *  among them (a file begun since): at once the first time it is asked for, and after that not more often than
+ *  every other second. */
+export function recordFiles(home = codexHome()): RecordFiles {
+  const scan = () => {
+    const byOwn = new Map<string, { thread: string; path: string }>();
+    const byThread = new Map<string, { stamp: string; path: string }[]>();
+    const walk = (dir: string, depth: number) => {
+      let names: import("node:fs").Dirent[] = [];
+      try {
+        names = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of names) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (depth < 4) walk(path, depth + 1);
+          continue;
+        }
+        const named = NAMED.exec(entry.name);
+        if (!named) continue;
+        byOwn.set(named[3] ?? named[2], { thread: named[2], path });
+        const list = byThread.get(named[2]);
+        if (list) list.push({ stamp: named[1] ?? "", path });
+        else byThread.set(named[2], [{ stamp: named[1] ?? "", path }]);
+      }
+    };
+    walk(join(home, "sessions"), 0);
+    walk(join(home, "archived_sessions"), 0);
+    const seq = new Map<string, number>();
+    for (const list of byThread.values()) {
+      list.sort((a, b) => (a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : a.path < b.path ? -1 : 1));
+      list.forEach((one, at) => seq.set(one.path, at));
+    }
+    const made = { at: Date.now(), byOwn, seq };
+    indexes.set(home, made);
+    return made;
+  };
+  const have = () => indexes.get(home) ?? scan();
+  const find = <T>(key: string, among: (index: ReturnType<typeof scan>) => T | undefined): T | undefined => {
+    const found = among(have());
+    if (found !== undefined) return found;
+    let missed = missing.get(home);
+    if (!missed) missing.set(home, (missed = new Set()));
+    const again = !missed.has(key) || Date.now() - have().at > 2000 ? among(scan()) : undefined;
+    if (again === undefined) missed.add(key);
+    else missed.delete(key);
+    return again;
+  };
+  return {
+    fileOf(own) {
+      const found = find("id " + own, (index) => index.byOwn.get(own));
+      if (found) return found;
+      // a file whose name does not say whose it is: the list of threads knows where a thread's record is kept
+      const path = rolloutPathOf(own, home);
+      return path ? { thread: own, path } : null;
+    },
+    seqOf(path) {
+      return find("file " + path, (index) => index.seq.get(path)) ?? -1;
+    },
+  };
+}
+
+/** One record file read by itself: what it says, and where it says its history lies. */
+interface Part {
+  items: Item[];
+  forkedFrom: string | null;
+  /** The file its history lies in, by that file's own id, and how far into it. */
+  base: { id: string; end: number } | null;
+  open: boolean;
+  openAt: number;
+  lastAt: number;
+}
+
+const cache = new Map<string, { size: number; mtime: number; rollout: Part }>();
+/** A file's beginning, read as far as a place in it: what lies before a place in a record does not change. */
+const prefixes = new Map<string, Part>();
+const made = new WeakMap<Part, Rollout>();
+
+/** What one thread said and changed. Each file is read once, and again only when it has grown. */
+export async function readRollout(sessionId: string, path: string, files: RecordFiles = recordFiles()): Promise<Rollout | null> {
+  const top = await readPart(sessionId, path);
+  if (!top) return null;
+  const kept = made.get(top);
+  if (kept) return kept;
+  // back through the files the thread's own talk lies in, to where another thread's file is named (a fork) or none is
+  const own: { part: Part; path: string; end?: number }[] = [{ part: top, path }];
+  let base: Rollout["base"] = null;
+  let forkedFrom = top.forkedFrom;
+  for (let from = top, guard = 0; from.base && guard < 24; guard += 1) {
+    const file = files.fileOf(from.base.id);
+    if (!file) break; // the file it names is gone: what lay in it is not known
+    if (file.thread !== sessionId) {
+      base = { thread: file.thread, file: file.path, end: from.base.end };
+      forkedFrom = file.thread;
+      break;
+    }
+    const before = await readPart(sessionId, file.path, from.base.end);
+    if (!before) break;
+    own.unshift({ part: before, path: file.path, end: from.base.end });
+    forkedFrom ??= before.forkedFrom;
+    from = before;
+  }
+  // An item is known by the file it lies in and its place there, so that a number never comes to mean another item:
+  // what was said after a request that was then said again is no longer of the thread, and its numbers are not
+  // given out anew. The thread's first file counts from 0, as a thread with one file does.
+  const seqs = own.map((one) => files.seqOf(one.path));
+  const known = seqs.every((seq) => seq >= 0);
+  const items = own.length === 1 && !(seqs[0] > 0) ? top.items
+    : own.flatMap((one, at) => one.part.items.map((item, n) => ({ ...item, id: sessionId + ":" + ((known ? seqs[at] : at) * 1_000_000 + n) })));
+  const rollout: Rollout = { items, forkedFrom, base, files: own.map(({ path: file, end }) => ({ path: file, ...(end === undefined ? {} : { end }) })), open: top.open, openAt: top.openAt, lastAt: top.lastAt };
+  made.set(top, rollout);
+  return rollout;
+}
+
+/** The files a thread's own talk lies in, the newest first. */
+export async function ownRecords(sessionId: string, path: string): Promise<string[]> {
+  return ((await readRollout(sessionId, path))?.files ?? [{ path }]).map((one) => one.path).reverse();
+}
+
+/** One record file, or (end) its beginning as far as that place. */
+async function readPart(sessionId: string, path: string, end?: number): Promise<Part | null> {
   let stat;
   try {
     stat = statSync(path);
   } catch {
     return null;
   }
-  const kept = cache.get(path);
+  const key = path + "@" + end;
+  if (end !== undefined) {
+    const before = prefixes.get(key);
+    if (before) return before;
+  }
+  const kept = end === undefined ? cache.get(path) : undefined;
   if (kept && kept.size === stat.size && kept.mtime === stat.mtimeMs) return kept.rollout;
-  const rollout: Rollout = { items: [], forkedFrom: null, base: null, open: false, openAt: 0, lastAt: 0 };
+  const rollout: Part = { items: [], forkedFrom: null, base: null, open: false, openAt: 0, lastAt: 0 };
   // Older threads, and copies of Claude Code sessions, keep what was said as user_message and agent_message events.
   const older: Item[] = [];
   let answers: Item[] = [];
   // What a hook put with a prompt is not part of the prompt's own record: it is a message of its own, beside it.
   const hooked: { turnId: string | null; text: string; seen: number; seenOlder: number }[] = [];
   const marked = JSON.stringify(PIECE_MARK).slice(1, -1); // the mark as it stands inside a line of JSON
-  const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
+  if (end === 0) return rollout; // nothing of the file is before its beginning
+  const lines = createInterface({ input: createReadStream(path, { encoding: "utf8", ...(end === undefined ? {} : { end: end - 1 }) }), crlfDelay: Infinity });
   for await (const line of lines) {
     // Most of a rollout is model requests and tool output; only a few kinds of line matter here.
     const head = line.slice(0, 400);
@@ -222,11 +367,9 @@ export async function readRollout(sessionId: string, path: string): Promise<Roll
     const at = ms(record?.timestamp);
     if (at) rollout.lastAt = at;
     if (record?.type === "session_meta") {
-      if (typeof payload.forked_from_id === "string" && !rollout.forkedFrom) {
-        rollout.forkedFrom = payload.forked_from_id;
-        const base = payload.history_base;
-        if (base && typeof base.thread_id === "string" && Number.isInteger(base.end_byte_offset)) rollout.base = { thread: base.thread_id, end: base.end_byte_offset };
-      }
+      if (typeof payload.forked_from_id === "string" && !rollout.forkedFrom) rollout.forkedFrom = payload.forked_from_id;
+      const base = payload.history_base;
+      if (!rollout.base && base && typeof base.thread_id === "string" && Number.isInteger(base.end_byte_offset)) rollout.base = { id: base.thread_id, end: base.end_byte_offset };
       continue;
     }
     if (record?.type === "response_item") {
@@ -289,7 +432,8 @@ export async function readRollout(sessionId: string, path: string): Promise<Roll
     const target = (one.turnId ? prompts.findLast((item) => item.turnId === one.turnId) : undefined) ?? before.findLast((item) => item.kind === "prompt") ?? prompts[0];
     if (target) target.added = target.added ? target.added + "\n\n" + one.text : one.text;
   }
-  cache.set(path, { size: stat.size, mtime: stat.mtimeMs, rollout });
+  if (end === undefined) cache.set(path, { size: stat.size, mtime: stat.mtimeMs, rollout });
+  else prefixes.set(key, rollout);
   return rollout;
 }
 
@@ -313,13 +457,13 @@ export function rolloutPathOf(thread: string, home = codexHome()): string | null
   }
 }
 
-/** What a forked thread's record says of where it comes from: the thread, and how far into that thread's record its
- *  history goes. Null when the record does not say (the thread is not a fork, or is one of an older kind). */
-function baseOf(path: string): { thread: string; end: number } | null {
+/** Where a record file says its history lies: in the file with that id of its own, as far as that place. Null when
+ *  it does not say. */
+function baseOf(path: string): { id: string; end: number } | null {
   try {
     const first = JSON.parse(stretch(path, 0, 4_000_000).split("\n", 1)[0]); // the record's first line says what the thread is
     const base = first?.type === "session_meta" ? first.payload?.history_base : null;
-    return base && typeof base.thread_id === "string" && Number.isInteger(base.end_byte_offset) ? { thread: base.thread_id, end: base.end_byte_offset } : null;
+    return base && typeof base.thread_id === "string" && Number.isInteger(base.end_byte_offset) ? { id: base.thread_id, end: base.end_byte_offset } : null;
   } catch {
     return null;
   }
@@ -370,21 +514,24 @@ function lastTurnWithin(path: string, end: number): string | null {
 /** Where a thread is to be forked so that the fork is the thread as it stood before one of its requests: the thread
  *  to fork and the last of its turns to keep. Null: nothing was said before that request. Undefined: the record does
  *  not tell.
- *  items: the thread's own, in the order they were said. A thread that is itself a fork keeps what it was given in
- *  the record of the thread it came from: before its own first request stands that thread, up to where the fork was
- *  made, and that is then the thread to fork. pathOf: where a thread's record is kept. */
-export function forkPoint(session: Session, items: Item[], prompt: Item, pathOf: (thread: string) => string | null = rolloutPathOf): { from: string; at: string } | null | undefined {
+ *  items: the thread's own, in the order they were said (those of its earlier files among them). A thread that is
+ *  itself a fork keeps what it was given in a file of the thread it came from: before its own first request stands
+ *  that thread, up to where the fork was made, and that is then the thread to fork. */
+export function forkPoint(session: Session, items: Item[], prompt: Item, files: RecordFiles = recordFiles()): { from: string; at: string } | null | undefined {
   if (!prompt.turnId) return undefined; // an older record, which does not say which turn is which
   const before = items.slice(0, items.indexOf(prompt)).findLast((item) => item.turnId && item.turnId !== prompt.turnId);
   if (before?.turnId) return { from: session.id, at: before.turnId };
   if (session.origin !== "fork") return null;
+  // Back through the files its history lies in. Those of its own were looked through above (their turns are among
+  // the items); the first of another thread's that tells of a turn before the place named is where to fork.
   let path = session.recordPath;
-  for (let guard = 0; path && guard < 8; guard += 1) {
+  for (let guard = 0; path && guard < 24; guard += 1) {
     const base = baseOf(path);
-    if (!base) return undefined;
-    path = pathOf(base.thread);
-    const at = path ? lastTurnWithin(path, base.end) : null;
-    if (at) return { from: base.thread, at };
+    const file = base ? files.fileOf(base.id) : null;
+    if (!base || !file) return undefined;
+    const at = file.thread === session.id ? null : lastTurnWithin(file.path, base.end);
+    if (at) return { from: file.thread, at };
+    path = file.path;
   }
   return undefined;
 }
@@ -403,6 +550,9 @@ export function applyRollout(session: Session, rollout: Rollout, now = Date.now(
     session.origin = "fork";
   }
   if (rollout.lastAt > session.updatedAt) session.updatedAt = rollout.lastAt;
+  // The list of threads says when the thread's newest file was begun. A thread whose record lies in several files
+  // began when the first thing in the oldest of them was said.
+  if (rollout.files.length > 1 && rollout.items.length && rollout.items[0].at < session.startedAt) session.startedAt = rollout.items[0].at;
   session.activity = activityOf(session.activity === "archived", rollout.open, session.updatedAt, now);
   if (session.activity === "running") {
     const last = [...rollout.items].reverse().find((item) => item.kind === "change");

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { answer, makeBundle, maskBundle, readBundle } from "../src/bundle.ts";
 import { answerBefore, folderName, readClaudeSessions } from "../src/claude.ts";
 import { freshPlan } from "../src/fresh.ts";
-import { applyRollout, forkPoint, keptTurn, readRollout } from "../src/codex.ts";
+import { applyRollout, forkPoint, keptTurn, readRollout, recordFiles, type RecordFiles } from "../src/codex.ts";
 import { hookStates } from "../src/hooks.ts";
 import { serve } from "../src/server.ts";
 import { farLinks, FILES_NOTE, filesIn, filesNote, forkedBefore, overlaps, pieceBlock, recordedLinks, transferLinks, withBlocks, withoutPieces, withPieces, type Kept } from "../src/links.ts";
@@ -961,22 +961,23 @@ test("a Codex thread is forked after the turn before the request to be said agai
   const kept = line({ type: "session_meta", payload: { id: "base" } }) + turnLine("t1", "task_started") + turnLine("t1", "task_complete") + turnLine("t2", "task_started") + line({ type: "response_item", payload: { type: "message", content: "한글이 든 줄 " + "가".repeat(400) } }) + turnLine("t2", "task_complete");
   writeFileSync(join(dir, "base.jsonl"), kept + turnLine("t3", "task_started") + turnLine("t3", "task_complete"));
   writeFileSync(join(dir, "fork.jsonl"), line({ type: "session_meta", payload: { id: "fork", forked_from_id: "base", history_base: { thread_id: "base", end_byte_offset: Buffer.byteLength(kept) } } }) + turnLine("f1", "task_started"));
-  const pathOf = (thread: string) => (thread === "base" || thread === "fork" ? join(dir, thread + ".jsonl") : null);
+  // (here a file is simply named after its thread)
+  const files: RecordFiles = { fileOf: (own) => (["base", "fork", "again"].includes(own) ? { thread: own, path: join(dir, own + ".jsonl") } : null), seqOf: () => 0 };
   const fork = session("fork", { origin: "fork", parentId: "base", recordPath: join(dir, "fork.jsonl") });
   const first = item("f1", "prompt", 0, "fork");
-  assert.deepEqual(forkPoint(fork, [first, item("f1", "answer", 1, "fork")], first, pathOf), { from: "base", at: "t2" });
+  assert.deepEqual(forkPoint(fork, [first, item("f1", "answer", 1, "fork")], first, files), { from: "base", at: "t2" });
   // read as a record, the fork says the same of itself; and the last turn it keeps of the base is found from that
-  const read = await readRollout("fork", join(dir, "fork.jsonl"));
-  assert.deepEqual(read?.base, { thread: "base", end: Buffer.byteLength(kept) });
-  assert.equal(keptTurn(join(dir, "base.jsonl"), read!.base!.end), "t2");
+  const read = await readRollout("fork", join(dir, "fork.jsonl"), files);
+  assert.deepEqual(read?.base, { thread: "base", file: join(dir, "base.jsonl"), end: Buffer.byteLength(kept) });
+  assert.equal(keptTurn(read!.base!.file, read!.base!.end), "t2");
   // a fork of that fork, made before anything was said in it: its history is still the base's
   writeFileSync(join(dir, "again.jsonl"), line({ type: "session_meta", payload: { id: "again", forked_from_id: "fork", history_base: { thread_id: "fork", end_byte_offset: Buffer.byteLength(readFileSync(join(dir, "fork.jsonl"), "utf8").split("\n")[0]) + 1 } } }));
   const again = session("again", { origin: "fork", parentId: "fork", recordPath: join(dir, "again.jsonl") });
   const theirs = item("g1", "prompt", 0, "again");
-  assert.deepEqual(forkPoint(again, [theirs], theirs, (thread) => (thread === "again" ? join(dir, "again.jsonl") : pathOf(thread))), { from: "base", at: "t2" });
+  assert.deepEqual(forkPoint(again, [theirs], theirs, files), { from: "base", at: "t2" });
   // a fork whose record does not say where its history ends is not guessed at
   writeFileSync(join(dir, "old.jsonl"), line({ type: "session_meta", payload: { id: "old", forked_from_id: "base" } }));
-  assert.equal(forkPoint(session("old", { origin: "fork", parentId: "base", recordPath: join(dir, "old.jsonl") }), [theirs], theirs, pathOf), undefined);
+  assert.equal(forkPoint(session("old", { origin: "fork", parentId: "base", recordPath: join(dir, "old.jsonl") }), [theirs], theirs, files), undefined);
 });
 
 test("what makes the screen an app is served as what it is, and the page shown while the server is down needs nothing from it", async () => {
@@ -1100,4 +1101,78 @@ test("a fork's line says which request of its parent it was made before, for a f
   const into = (itemId: string) => tracePiece({ sessionId: "base", itemId, start: 0, end: 30 }, links, bodies, sessions).filter((step) => step.dir === "onward").map((step) => step.link.to.sessionId).sort();
   assert.deepEqual(into("base:1"), ["codex-end", "codex-fork", "codex-lost", "unsaid"]);
   assert.deepEqual(into("base:4"), ["codex-end", "codex-lost", "unsaid"]);
+});
+
+test("a Codex thread whose request was said again in the app is read back through its files; a file is named by an id of its own", async () => {
+  // As Codex keeps them: a folder for each day, a file named by when it was begun and the thread, and (for a file
+  // begun when a request was said again) an id of its own at the end.
+  const home = join(scratchDir, "codex-files");
+  const day = join(home, "sessions", "2026", "01", "01");
+  mkdirSync(day, { recursive: true });
+  const T = "0aaaaaaa-0000-4000-8000-000000000001";
+  const S = "0bbbbbbb-0000-4000-8000-000000000002"; // the file begun when the second request was said again
+  const S2 = "0ccccccc-0000-4000-8000-000000000003"; // and the one begun when that was said again
+  const F = "0ddddddd-0000-4000-8000-000000000004"; // a fork of the thread, made before any of that
+  const G = "0eeeeeee-0000-4000-8000-000000000005"; // a fork made later, of the thread as it then stood
+  const at = (minute: number) => "2026-01-01T00:" + String(minute).padStart(2, "0") + ":00Z";
+  const turn = (id: string, minute: number, asked: string, answered: string) =>
+    line({ timestamp: at(minute), type: "event_msg", payload: { type: "task_started", turn_id: id } }) +
+    line({ timestamp: at(minute), type: "event_msg", payload: { type: "item_completed", turn_id: id, item: { type: "UserMessage", content: [{ type: "text", text: asked }] } } }) +
+    line({ timestamp: at(minute), type: "event_msg", payload: { type: "item_completed", turn_id: id, item: { type: "AgentMessage", phase: "final_answer", content: [{ type: "Text", text: answered }] } } }) +
+    line({ timestamp: at(minute), type: "event_msg", payload: { type: "task_complete", turn_id: id } });
+  const meta = (id: string, more: object = {}) => line({ timestamp: at(0), type: "session_meta", payload: { id, ...more } });
+  const lines = (text: string) => text.split("\n").length - 1;
+  // the thread's first file: two turns
+  const first = meta(T) + turn("t1", 1, "첫 요청", "첫 답");
+  const one = join(day, "rollout-2026-01-01T00-00-00-" + T + ".jsonl");
+  writeFileSync(one, first + turn("t2", 2, "고치기 전의 요청", "버려질 답"));
+  // the second request said again: a file of its own, whose history is the first file up to before that request
+  const second = meta(T, { history_base: { thread_id: T, end_ordinal_exclusive: lines(first), end_byte_offset: Buffer.byteLength(first) } });
+  const two = join(day, "rollout-2026-01-01T01-00-00-" + T + "_" + S + ".jsonl");
+  writeFileSync(two, second + turn("t3", 3, "고친 요청", "고친 답"));
+  const files = recordFiles(home);
+  assert.deepEqual([files.fileOf(T), files.fileOf(S), files.seqOf(one), files.seqOf(two)], [{ thread: T, path: one }, { thread: T, path: two }, 0, 1]);
+  const read = (await readRollout(T, two, files))!;
+  assert.deepEqual(read.items.map((item) => [item.id.slice(T.length + 1), item.kind, item.text]), [["0", "prompt", "첫 요청"], ["1", "answer", "첫 답"], ["1000000", "prompt", "고친 요청"], ["1000001", "answer", "고친 답"]]);
+  assert.deepEqual([read.forkedFrom, read.base, read.files], [null, null, [{ path: one, end: Buffer.byteLength(first) }, { path: two }]]);
+  // what the first file alone gives is what it always gave: the numbers of the thread's first file are not changed
+  assert.deepEqual((await readRollout(T, one, files))!.items.map((item) => item.id.slice(T.length + 1) + " " + item.text), ["0 첫 요청", "1 첫 답", "2 고치기 전의 요청", "3 버려질 답"]);
+  // the thread began when its first word was said, not when its newest file was begun
+  const made = session(T, { startedAt: Date.parse(at(30)), updatedAt: Date.parse(at(30)) });
+  applyRollout(made, read, Date.parse(at(40)));
+  assert.deepEqual([made.startedAt, made.counts.prompts, made.origin], [Date.parse(at(1)), 2, "user"]);
+  // said again once more: the new file names the second by that file's own id, and the second names the first
+  const third = join(day, "rollout-2026-01-01T02-00-00-" + T + "_" + S2 + ".jsonl");
+  writeFileSync(third, meta(T, { history_base: { thread_id: S, end_ordinal_exclusive: lines(first) + lines(second), end_byte_offset: Buffer.byteLength(second) } }) + turn("t4", 4, "또 고친 요청", "또 고친 답"));
+  const later = (await readRollout(T, third, files))!;
+  assert.deepEqual(later.items.map((item) => item.id.slice(T.length + 1) + " " + item.text), ["0 첫 요청", "1 첫 답", "2000000 또 고친 요청", "2000001 또 고친 답"]);
+  assert.equal(later.files.length, 3);
+  // A fork made of the thread while its first file was all there was keeps naming that file, whatever the thread
+  // has been through since: the last turn it keeps is found there.
+  const whole = readFileSync(one, "utf8");
+  const forked = join(day, "rollout-2026-01-01T00-30-00-" + F + ".jsonl");
+  writeFileSync(forked, meta(F, { forked_from_id: T, history_base: { thread_id: T, end_ordinal_exclusive: lines(whole), end_byte_offset: Buffer.byteLength(whole) } }) + turn("f1", 5, "갈라진 쪽의 요청", "갈라진 쪽의 답"));
+  const fork = (await readRollout(F, forked, files))!;
+  assert.deepEqual([fork.forkedFrom, fork.base, fork.items.map((item) => item.id.slice(F.length + 1) + " " + item.text)], [T, { thread: T, file: one, end: Buffer.byteLength(whole) }, ["0 갈라진 쪽의 요청", "1 갈라진 쪽의 답"]]);
+  assert.equal(keptTurn(fork.base!.file, fork.base!.end), "t2");
+  // A fork made of the thread as it stood after the request was said again names the newer file, by that file's
+  // own id (which is no thread's). It is a fork of the thread all the same, though its record does not say of what.
+  const afterTwo = readFileSync(two, "utf8");
+  const newer = join(day, "rollout-2026-01-01T03-00-00-" + G + ".jsonl");
+  writeFileSync(newer, meta(G, { history_base: { thread_id: S, end_ordinal_exclusive: lines(first) + lines(afterTwo), end_byte_offset: Buffer.byteLength(afterTwo) } }) + turn("g1", 6, "새 갈래의 요청", "새 갈래의 답"));
+  const other = (await readRollout(G, newer, files))!;
+  assert.deepEqual([other.forkedFrom, other.base?.thread, other.base?.file, other.items.length], [T, T, two, 2]);
+  // to say the newer fork's first request again, the thread is forked after the last turn the fork was given
+  const g = session(G, { origin: "fork", parentId: T, recordPath: newer });
+  assert.deepEqual(forkPoint(g, other.items, other.items[0], files), { from: T, at: "t3" });
+  // and had the fork been made before anything was said in the newer file, after the last turn of the file before it
+  const early = join(day, "rollout-2026-01-01T03-30-00-0fffffff-0000-4000-8000-000000000006.jsonl");
+  writeFileSync(early, meta("0fffffff-0000-4000-8000-000000000006", { history_base: { thread_id: S, end_ordinal_exclusive: lines(first) + lines(second), end_byte_offset: Buffer.byteLength(second) } }) + turn("h1", 7, "더 앞에서 갈라진 요청", "답"));
+  const h = (await readRollout("0fffffff-0000-4000-8000-000000000006", early, files))!;
+  assert.deepEqual(forkPoint(session("0fffffff-0000-4000-8000-000000000006", { origin: "fork", parentId: T, recordPath: early }), h.items, h.items[0], files), { from: T, at: "t1" });
+  // a file that names one that is not there is read by itself, and says what it can
+  const lost = join(day, "rollout-2026-01-01T04-00-00-" + T + "_0abcdef0-0000-4000-8000-000000000007.jsonl");
+  writeFileSync(lost, meta(T, { history_base: { thread_id: "01234567-0000-4000-8000-00000000dead", end_ordinal_exclusive: 3, end_byte_offset: 10 } }) + turn("t9", 9, "홀로 남은 요청", "답"));
+  const alone = (await readRollout(T, lost, recordFiles(home)))!;
+  assert.deepEqual([alone.base, alone.items.map((item) => item.id.slice(T.length + 1))], [null, ["3000000", "3000001"]]); // its numbers are still its own
 });

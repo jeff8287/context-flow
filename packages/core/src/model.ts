@@ -42,7 +42,8 @@ export interface Session {
 export type ItemKind = "prompt" | "answer" | "change";
 
 export interface Item {
-  /** <session id>:<running number>. Records are only ever appended to, so the number stays put. */
+  /** <session id>:<number>. A number is never given to another item: a record is only ever added to, and where a
+   *  Codex thread's record lies in several files (codex.ts), an item is numbered by its file and its place there. */
   id: string;
   sessionId: string;
   turnId: string | null;

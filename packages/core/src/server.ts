@@ -9,7 +9,7 @@ import { userInfo } from "node:os";
 import { basename, extname, join, normalize } from "node:path";
 import { HOME } from "./home.ts";
 import { answerBefore } from "./claude.ts";
-import { forkPoint, rolloutPathOf } from "./codex.ts";
+import { forkPoint, ownRecords } from "./codex.ts";
 import { makeBundle, maskBundle, type Spot } from "./bundle.ts";
 import { freshPlan } from "./fresh.ts";
 import { filesIn, filesNote, pieceBlock, withBlocks } from "./links.ts";
@@ -301,7 +301,7 @@ export function serve(port: number, webDir: string): Served {
           } else {
             const nth = (item: { id: string }) => Number(item.id.slice(item.id.lastIndexOf(":") + 1));
             const own = [...made.bodies.values()].filter((item) => item.sessionId === session.id).sort((one, other) => nth(one) - nth(other));
-            point = forkPoint(session, own, prompt, (thread) => made.snapshot.sessions.find((one) => one.id === thread)?.recordPath ?? rolloutPathOf(thread));
+            point = forkPoint(session, own, prompt);
           }
           if (point === undefined) return send(400, { error: "이 요청 앞에서 대화를 갈라 낼 곳을 기록에서 찾지 못했습니다" });
           const now = Date.now();
@@ -407,7 +407,14 @@ export function serve(port: number, webDir: string): Served {
             const nth = (one: { id: string }) => Number(one.id.slice(one.id.lastIndexOf(":") + 1));
             let before = 0;
             if (session.client === "codex") for (const other of made!.bodies.values()) if (other.sessionId === item.sessionId && other.kind === "prompt" && other.turnId === item.turnId && nth(other) < nth(item)) before += other.images ?? 0;
-            const picture = n < (item.images ?? 0) ? (await picturesOf(session.client, session.recordPath, item.turnId))[before + n] : undefined;
+            // a Codex thread's record may lie in several files: the turn is in one of them
+            let picture: Awaited<ReturnType<typeof picturesOf>>[number] | undefined;
+            if (n < (item.images ?? 0)) {
+              for (const path of session.client === "codex" ? await ownRecords(session.id, session.recordPath) : [session.recordPath]) {
+                picture = (await picturesOf(session.client, path, item.turnId))[before + n];
+                if (picture) break;
+              }
+            }
             if (picture && SHOWN.has(picture.type)) {
               // what a request was sent with does not change: the page need not ask for it again
               response.writeHead(200, { "content-type": picture.type, "content-length": picture.bytes.length, "cache-control": "private, max-age=86400", "x-content-type-options": "nosniff" });
