@@ -13,6 +13,11 @@ export function under(path: string, root: string): boolean {
   return path === base || path.startsWith(base + "/");
 }
 
+/** Whether a folder is of a project: under one of the project's folders, and not in one that is another project's. */
+export function within(path: string, project: { roots: string[]; not?: string[] }): boolean {
+  return project.roots.some((root) => under(path, root)) && !(project.not ?? []).some((root) => under(path, root));
+}
+
 /** What the clients wrap around what the user typed: blocks like <environment_context>…</environment_context>. */
 const WRAPPED = /^\s*<([a-zA-Z_][\w-]*)[^>]*>[\s\S]*?<\/\1>\s*/;
 

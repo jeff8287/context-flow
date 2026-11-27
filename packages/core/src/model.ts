@@ -8,6 +8,9 @@ export interface Project {
   id: string;
   name: string;
   roots: string[];
+  /** Folders under its own that are other projects': a session that works there is not this project's. Only a
+   *  project found from the folders the sessions worked in has these (projects.ts); the screen is not told of them. */
+  not?: string[];
 }
 
 /** How a session came to be. */

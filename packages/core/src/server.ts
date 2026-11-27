@@ -16,7 +16,8 @@ import { filesIn, filesNote, pieceBlock, withBlocks } from "./links.ts";
 import type { Client, Place, Project, Session, Transfer } from "./model.ts";
 import { picturesOf, SHOWN } from "./pictures.ts";
 import { findIn, goneOf, talkOf } from "./read.ts";
-import { buildSnapshot, findProjects, nearestProject, readCodexProjects, type Built } from "./snapshot.ts";
+import { FROM_FOLDERS, readProjects, shown } from "./projects.ts";
+import { buildSnapshot, findProjects, nearestProject, type Built } from "./snapshot.ts";
 import { standalonePage } from "./standalone.ts";
 import { appendTransfers, dropPending, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
 import { tracePiece } from "./trace.ts";
@@ -153,10 +154,11 @@ export function serve(port: number, webDir: string): Served {
   };
   // wanted: a project (its id, a folder of it, or its name), or several put on one map (their ids, joined by commas)
   const read = async (wanted: string): Promise<Built | null> => {
-    const { projects, assigned } = readCodexProjects();
+    const { projects, assigned, from } = readProjects();
     const chosen = findProjects(wanted, projects);
     if (!chosen.length) return null;
     const made = await buildSnapshot(chosen.length === 1 ? chosen[0] : chosen, assigned);
+    if (from === "folders") made.snapshot.notes.push(FROM_FOLDERS);
     // A turn this tool is running is known here at first hand: the session is at work, and waits to be allowed something
     // for as long as a request of its turn is unanswered.
     for (const turn of turns.values()) {
@@ -373,8 +375,9 @@ export function serve(port: number, webDir: string): Served {
         return send(200, { models: client === "codex" || client === "claude" ? await listModels(client) : [] });
       }
       if (url.pathname === "/api/projects") {
-        const { projects } = readCodexProjects();
-        return send(200, { projects });
+        // from: whether they are the Codex app's sidebar projects, or were found from the folders the sessions worked in
+        const { projects, from } = readProjects();
+        return send(200, { projects: projects.map(shown), from });
       }
       if (url.pathname === "/api/snapshot") {
         const made = await read(url.searchParams.get("project") ?? "");
@@ -489,7 +492,7 @@ export function serve(port: number, webDir: string): Served {
       if (url.pathname === "/api/events") {
         // Told when what a screen shows has changed: the records of its projects, what a client's process says it is
         // at, a piece set to wait or taken. Only that something changed is said; the screen then reads again.
-        const chosen = findProjects(url.searchParams.get("project") ?? "", readCodexProjects().projects);
+        const chosen = findProjects(url.searchParams.get("project") ?? "", readProjects().projects);
         response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive" });
         const tell = (event: unknown) => { response.write("data: " + JSON.stringify(event) + "\n\n"); };
         const screen: Screen = { key: chosen.map((one) => one.id).join(","), interest: new Interest(), tell, timer: null, last: 0 };
