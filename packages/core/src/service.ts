@@ -69,7 +69,15 @@ export function installService(cli: string, port: number): { ok: boolean; messag
   const cwd = join(dirname(cli), "..", "..", "..");
   writeFileSync(plistPath(), servicePlist({ node: process.execPath, cli, port, cwd, path: servicePath(), log: join(home, "server.log"), lang: process.env.LANG }));
   launchctl("bootout", target()); // the one that was there, if any
-  const made = launchctl("bootstrap", "gui/" + userInfo().uid, plistPath());
+  // launchd takes a moment to let go of an agent that was running, and takes no new one of the same name before it
+  // has: wait until the old one is gone, and ask again a few times if the new one is still turned away
+  const nap = () => spawnSync("/bin/sleep", ["0.25"]);
+  for (let tries = 0; tries < 20 && launchctl("print", target()).status === 0; tries += 1) nap();
+  let made = launchctl("bootstrap", "gui/" + userInfo().uid, plistPath());
+  for (let tries = 0; tries < 8 && made.status !== 0; tries += 1) {
+    nap();
+    made = launchctl("bootstrap", "gui/" + userInfo().uid, plistPath());
+  }
   if (made.status !== 0) return { ok: false, message: "launchd가 받아 주지 않았습니다: " + String(made.stderr || made.stdout).trim() };
   return { ok: true, message: plistPath() };
 }
