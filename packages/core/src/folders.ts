@@ -26,8 +26,9 @@ export function folderNamed(asked: unknown): string | null {
 export interface Folder { path: string; shown: string; git: boolean }
 /** A folder and the folders in it. up: the one it is in (null at the top). project: the folder that is the project of a
  *  session begun there (the git work tree it lies in, or itself). more: how many were left out of a long list. shut:
- *  it could not be read (on macOS, an app may need the person's leave to look in some folders). */
-export interface Folders extends Folder { up: string | null; project: string; folders: Folder[]; more: number; shut?: boolean }
+ *  it could not be read (on macOS, an app may need the person's leave to look in some folders). of: the project there
+ *  is already that a session begun there would be of (the server says it). */
+export interface Folders extends Folder { up: string | null; project: string; folders: Folder[]; more: number; shut?: boolean; of?: { id: string; name: string } }
 
 const ROOM = 300;
 const holdsGit = (path: string) => existsSync(join(path, ".git"));

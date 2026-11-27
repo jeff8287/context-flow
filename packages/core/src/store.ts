@@ -7,9 +7,11 @@
 //                                   browser the screen is opened in
 //   uploads/<when>-<id>/<name>      the pictures and other files sent along with a message from the screen: the
 //                                   client is handed them from here, and the agent reads the others from here
+//   folders.json                    the folders sessions were begun in from the screen while they lay in no project:
+//                                   each is a project beside the client's own (projects.ts), the one begun in last first
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, sep } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 import type { Piece, Place, Transfer } from "./model.ts";
 import { HOME } from "./home.ts";
 
@@ -32,6 +34,29 @@ export function writeBasket(pieces: unknown[]): void {
   const part = join(home(), ".basket.part"); // written whole or not at all
   writeFileSync(part, JSON.stringify(pieces));
   renameSync(part, join(home(), "basket.json"));
+}
+
+/** A folder a session was begun in from the screen while it lay in no project, and when. */
+export interface KeptFolder { root: string; at: number }
+
+/** The folders kept as projects of their own. */
+export function readFolders(): KeptFolder[] {
+  try {
+    const kept = JSON.parse(readFileSync(join(home(), "folders.json"), "utf8"));
+    if (!Array.isArray(kept)) return [];
+    return kept.filter((one) => typeof one?.root === "string" && isAbsolute(one.root)).map((one) => ({ root: one.root as string, at: Number(one.at) || 0 }));
+  } catch {
+    return []; // none was ever kept
+  }
+}
+
+/** Keep a folder as a project of its own: kept again, it is the one begun in last. */
+export function keepFolder(root: string, at = Date.now()): void {
+  const kept = [{ root, at }, ...readFolders().filter((one) => one.root !== root)];
+  mkdirSync(home(), { recursive: true });
+  const part = join(home(), ".folders.part"); // written whole or not at all
+  writeFileSync(part, JSON.stringify(kept, null, 1) + "\n");
+  renameSync(part, join(home(), "folders.json"));
 }
 
 export function readTransfers(): Transfer[] {

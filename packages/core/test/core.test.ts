@@ -18,13 +18,13 @@ import { readClaudeLive, settleActivity, type ClaudeLive, type Live } from "../s
 import type { Item, Place, Project, Session, Snapshot, Transfer } from "../src/model.ts";
 import { flat, forgetPastes, pasteLinks } from "../src/paste.ts";
 import { forgetPictures, picturesOf } from "../src/pictures.ts";
-import { folderProjects, forgetProjects, readProjects } from "../src/projects.ts";
+import { folderProjects, forgetProjects, projectFor, readProjects } from "../src/projects.ts";
 import { tracePiece } from "../src/trace.ts";
 import { goneOf, talkOf } from "../src/read.ts";
 import { LABEL, servicePath, servicePlist } from "../src/service.ts";
 import { buildSnapshot, findProjects, nearestProject, waitingOf } from "../src/snapshot.ts";
 import { standalonePage } from "../src/standalone.ts";
-import { appendTransfers, dropPending, queuePieces, readBasket, readPending, readTransfers, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "../src/store.ts";
+import { appendTransfers, dropPending, keepFolder, queuePieces, readBasket, readPending, readTransfers, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "../src/store.ts";
 import { startNew, type Turn } from "../src/talk.ts";
 import { typed } from "../src/util.ts";
 import { grown, Interest } from "../src/watch.ts";
@@ -807,6 +807,7 @@ test("where the Codex app has no projects, the folders the sessions worked in st
 
   process.env.CONTEXT_FLOW_CLAUDE_HOME = claude;
   process.env.CONTEXT_FLOW_CODEX_HOME = codex;
+  process.env.CONTEXT_FLOW_HOME = join(scratchDir, "only-flow"); // nothing kept from a screen yet (the person's own is not read)
   try {
     // that is what there is to choose from while the Codex app has no projects
     forgetProjects();
@@ -816,7 +817,6 @@ test("where the Codex app has no projects, the folders the sessions worked in st
     assert.deepEqual([Object.keys(made.snapshot.project).sort(), made.snapshot.sessions.map((one) => one.id)], [["id", "name", "roots"], ["at-home"]]);
     // The server gives them out as found from the folders, and says so on the map of each. (They are found anew
     // every few seconds at most: here, as they were found a moment ago.)
-    process.env.CONTEXT_FLOW_HOME = join(scratchDir, "only-flow");
     const served = serve(0, join(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "public"));
     try {
       const at = "http://127.0.0.1:" + (await served.ready);
@@ -829,17 +829,37 @@ test("where the Codex app has no projects, the folders the sessions worked in st
       assert.deepEqual(((await (await fetch(at + "/api/snapshot?project=" + encodeURIComponent(repo))).json()) as Snapshot).sessions.map((one) => one.id).sort(), ["in-repo", "in-web"]);
     } finally {
       await served.close();
-      delete process.env.CONTEXT_FLOW_HOME;
     }
     // once the app has projects, they are the projects; unless the folders are asked for
     writeFileSync(join(codex, ".codex-global-state.json"), JSON.stringify({ "local-projects": { side: { name: "사이드바의 것", rootPaths: [repo] } } }));
     assert.deepEqual([readProjects().from, readProjects().projects.map((one) => one.id)], ["sidebar", ["side"]]);
+    // A folder a session was begun in from the screen while it was in no project is kept, and is a project beside the
+    // sidebar's: the one begun in last first. One in a sidebar project is that project's; one deleted since is let go.
+    const newRepo = join(scratchDir, "only-new"); // a repository just made
+    const plain = join(scratchDir, "only-plain"); // a folder in no repository
+    mkdirSync(join(newRepo, ".git"), { recursive: true });
+    mkdirSync(join(newRepo, "src"), { recursive: true });
+    mkdirSync(plain, { recursive: true });
+    keepFolder(join(repo, "packages"), hour(1).getTime());
+    keepFolder(join(scratchDir, "only-gone"), hour(2).getTime());
+    keepFolder(newRepo, hour(6).getTime());
+    keepFolder(plain, hour(7).getTime());
+    assert.deepEqual(readProjects().projects.map((one) => [one.id === "side" ? one.id : one.name, one.roots, /^dir-/.test(one.id) || one.id === "side"]), [["side", [repo], true], ["only-plain", [plain], true], ["only-new", [newRepo], true]]);
+    // the project a session begun in a folder is of: the one it is in, kept or the sidebar's; or, in none, its work tree, not kept yet
+    assert.deepEqual([projectFor(join(repo, "packages", "web")).project.id, projectFor(join(newRepo, "src")).project.name, projectFor(join(newRepo, "src")).known], ["side", "only-new", true]);
+    const other = join(scratchDir, "only-other");
+    mkdirSync(join(other, ".git"), { recursive: true });
+    mkdirSync(join(other, "docs"), { recursive: true });
+    const unknown = projectFor(join(other, "docs"));
+    assert.deepEqual([unknown.known, unknown.project.roots, unknown.project.name], [false, [other], "only-other"]);
     process.env.CONTEXT_FLOW_PROJECTS = "folders";
-    assert.deepEqual([readProjects().from, readProjects().projects.length], ["folders", 5]);
+    // found from the folders, a kept folder counts as a folder a session worked in when it was kept: of its work tree
+    assert.deepEqual([readProjects().from, readProjects().projects.map((one) => one.name)], ["folders", ["only-plain", "only-new", "repo", "repo-tree", "notes", "cli", "only"]]);
   } finally {
     delete process.env.CONTEXT_FLOW_CLAUDE_HOME;
     delete process.env.CONTEXT_FLOW_CODEX_HOME;
     delete process.env.CONTEXT_FLOW_PROJECTS;
+    delete process.env.CONTEXT_FLOW_HOME;
   }
   // where neither client was ever used there is nothing to choose from, and nothing is said of what is not there
   forgetProjects();

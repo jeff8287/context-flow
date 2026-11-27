@@ -427,7 +427,14 @@ async function showBundle(id: string) {
 /** Put a project on the map beside what is there, or take it off: what is on, and what is open, stays as it is.
  *  False when it cannot be done (no such project; an exported record is being read). */
 async function withProject(id: string, on: boolean): Promise<boolean> {
-  if (state.bundle || !state.projects.some((one) => one.id === id)) return false;
+  if (state.bundle) return false;
+  if (on && !state.projects.some((one) => one.id === id)) {
+    // a project there is since the list was read (a folder a session was just begun in from here): read it again
+    try {
+      state.projects = (await call<{ projects: Project[] }>("/api/projects")).projects;
+    } catch { /* the server does not answer: there is nothing new to put on */ }
+  }
+  if (!state.projects.some((one) => one.id === id)) return false;
   const next = on ? (chosen.includes(id) ? chosen : [...chosen, id]) : chosen.filter((one) => one !== id);
   if (!next.length) return false;
   if (next.length === chosen.length) return true; // it is there already

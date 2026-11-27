@@ -79,7 +79,8 @@ export const state = {
   /** The screen has no server behind it: it is an exported page, and the bundle is all there is. */
   alone: false,
   /** A session about to be begun from here: the pane shows where its first request is written. */
-  fresh: null as { client: Client; cwd?: string; like?: string } | null,
+  /** The new session being begun. away: its folder is being chosen from the disk ('다른 폴더…'), and may lie outside the projects on the map. */
+  fresh: null as { client: Client; cwd?: string; like?: string; away?: boolean } | null,
   /** Until when a tile under the pointer keeps its card to itself: a piece has just been let go there. */
   calm: 0,
   /** The server tells this screen when the records change: it need not ask as often to find out. */

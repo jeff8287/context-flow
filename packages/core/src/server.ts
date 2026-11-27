@@ -17,13 +17,13 @@ import { filesIn, filesNote, pieceBlock, withBlocks } from "./links.ts";
 import type { Client, Place, Project, Session, Transfer } from "./model.ts";
 import { picturesOf, SHOWN } from "./pictures.ts";
 import { findIn, goneOf, talkOf } from "./read.ts";
-import { FROM_FOLDERS, readProjects, shown } from "./projects.ts";
+import { FROM_FOLDERS, lookAgain, projectFor, readProjects, shown } from "./projects.ts";
 import { buildSnapshot, findProjects, nearestProject, type Built } from "./snapshot.ts";
 import { standalonePage } from "./standalone.ts";
-import { appendTransfers, dropPending, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
+import { appendTransfers, dropPending, keepFolder, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
 import { tracePiece } from "./trace.ts";
 import { canStart, listModels, startFork, startNew, startTurn, type Along, type Turn } from "./talk.ts";
-import { oneLine } from "./util.ts";
+import { oneLine, within } from "./util.ts";
 import { grown, Interest, watchRecords, type Changed } from "./watch.ts";
 
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json",
@@ -239,14 +239,16 @@ export function serve(port: number, webDir: string): Served {
           // Begin a session with a first request, and the pieces picked for it. It is begun by its own client. Unless
           // the person chose otherwise it works in the folder the first piece came from (the project's first folder
           // when there is none) and runs like the nearest session of that client: its model and what it may do
-          // without asking (fresh.ts).
+          // without asking (fresh.ts). It may be begun in a folder outside the projects on the map, chosen from the
+          // disk: it is then of the project that folder is in, or of a project of its own.
+          // project: the project it is of, for the screen to put on the map when it is not there.
           const text = typeof asked.text === "string" ? asked.text.trim() : "";
           const picked = Array.isArray(asked.pieces) ? (asked.pieces as Record<string, unknown>[]) : [];
           const client: Client | null = asked.client === "codex" || asked.client === "claude" ? asked.client : null;
           if (!client) return send(400, { error: "어느 클라이언트로 시작할지 정해 주세요" });
           if (!text) return send(400, { error: "새 세션에 처음 할 말을 적어 주세요" });
           const now = Date.now();
-          let begun: { cwd: string; like: Session | null; pieces: Cut[] };
+          let begun: { cwd: string; like: Session | null; pieces: Cut[]; into?: Project; keep?: string };
           if (!asked.project) {
             // The first session of all, begun in a folder the person chose before there is a project to begin it in:
             // with no pieces (there is no session yet to cut them from) and its client's own defaults. Its folder is a
@@ -259,20 +261,31 @@ export function serve(port: number, webDir: string): Served {
           } else {
             const made = await read(String(asked.project));
             if (!made) return send(404, { error: "그런 프로젝트가 없습니다" });
+            const on = made.snapshot.projects ?? [made.snapshot.project];
+            let named = typeof asked.cwd === "string" && asked.cwd ? asked.cwd : undefined;
+            // A folder outside the projects on the map, chosen from the disk: the session is of the project it lies
+            // in, or of a project of its own (the work tree it lies in, or itself), kept once the session has begun.
+            let away: ReturnType<typeof projectFor> | null = null;
+            if (named && !on.some((one) => within(named!, one))) {
+              const folder = folderNamed(named);
+              if (!folder) return send(400, { error: "그런 폴더가 없습니다: " + named });
+              if (folder === "/") return send(400, { error: "맨 위 폴더에서는 시작하지 않습니다. 일할 폴더를 골라 주세요" });
+              away = projectFor(folder);
+              named = folder;
+            }
             const plan = freshPlan(made.snapshot.project, made.snapshot.sessions, {
-              client, from: String(picked[0]?.sessionId ?? ""),
-              cwd: typeof asked.cwd === "string" && asked.cwd ? asked.cwd : undefined,
+              client, from: String(picked[0]?.sessionId ?? ""), cwd: named, anywhere: Boolean(away),
               like: typeof asked.like === "string" && asked.like ? asked.like : undefined,
             });
             if ("error" in plan) return send(400, { error: plan.error });
             if (!existsSync(plan.cwd)) return send(400, { error: "새 세션이 일할 폴더가 없습니다: " + plan.cwd });
             // with several projects on the map, the new session is of the one whose folder it is begun in
-            const into = nearestProject(plan.cwd, made.snapshot.projects ?? [made.snapshot.project]);
+            const into = away?.project ?? nearestProject(plan.cwd, on);
             const pieces = await cut(read, made, picked, { sessionId: "", where: placeOf(made, { projectId: null, title: oneLine(text, 80), client }, into) }, now);
             if (!pieces) return send(400, { error: "붙인 조각을 기록에서 찾지 못했습니다. 기록을 다시 읽은 뒤 담아 주세요" });
-            begun = { cwd: plan.cwd, like: plan.like, pieces };
+            begun = { cwd: plan.cwd, like: plan.like, pieces, into, keep: away && !away.known ? away.project.roots[0] : undefined };
           }
-          const { cwd, like, pieces } = begun;
+          const { cwd, like, pieces, into, keep } = begun;
           let more: ReturnType<typeof alongOf>;
           try {
             more = alongOf(asked);
@@ -282,6 +295,14 @@ export function serve(port: number, webDir: string): Served {
           const { turn, ready } = startNew({ client, cwd, like }, withBlocks(text + more.note, pieces.map((piece) => pieceBlock(piece.block))), more.along);
           turns.set(turn.id, turn);
           follow(turn);
+          // its folder may be one no session worked in before: the folders are looked for again once it has written
+          // its record (it answers), and when it is done
+          let told = false;
+          turn.listen((event) => {
+            if (event.t === "prompt" || (told && event.t !== "done")) return;
+            told = true;
+            lookAgain();
+          });
           let kept = false;
           turn.listen((event) => {
             if (kept || event.t === "prompt" || !turn.sessionId) return;
@@ -291,7 +312,8 @@ export function serve(port: number, webDir: string): Served {
           });
           try {
             const session = await Promise.race([ready, new Promise<string>((_, reject) => setTimeout(() => reject(new Error("새 세션이 시작되지 않았습니다")), 20_000))]);
-            return send(200, { turn: turn.id, session, client, cwd, model: like?.model ?? null });
+            if (keep) keepFolder(keep); // a project of its own from now on, beside the others
+            return send(200, { turn: turn.id, session, client, cwd, model: like?.model ?? null, ...(into ? { project: shown(into) } : {}) });
           } catch (error) {
             if (!turn.done) turn.stop();
             return send(502, { error: String(error instanceof Error ? error.message : error) });
@@ -386,12 +408,15 @@ export function serve(port: number, webDir: string): Served {
       if (request.method !== "GET") return send(405, { error: "받지 않는 요청입니다" });
       if (url.pathname === "/api/basket") return send(200, { pieces: readBasket() });
       if (url.pathname === "/api/folders") {
-        // The folders in one, for choosing where a first session is begun: from the home folder unless another is
-        // asked for. Asked for the home folder, the git work trees near it are named too.
+        // The folders in one, for choosing where a session is begun from the disk (the first one, or one outside the
+        // projects on the map): from the home folder unless another is asked for. Asked for the home folder, or with
+        // near, the git work trees near the home folder are named too. of: the project there is already that a
+        // session begun there would be of.
         const asked = url.searchParams.get("path");
         const path = folderNamed(asked || "~");
         if (!path) return send(400, { error: "그런 폴더가 없습니다: " + asked });
-        return send(200, { ...foldersIn(path), ...(asked ? {} : { near: nearTrees() }) });
+        const found = projectFor(path);
+        return send(200, { ...foldersIn(path), ...(found.known ? { of: { id: found.project.id, name: found.project.name } } : {}), ...(asked && !url.searchParams.has("near") ? {} : { near: nearTrees() }) });
       }
       if (url.pathname === "/api/models") {
         // What a client offers to answer with, for the box in which the model of a session's next message is chosen.

@@ -248,7 +248,8 @@ export function drawMap() {
   const zones = many();
   const project = (state.snap?.project.id ?? "").split(",").sort().join(","); // the same projects are the same map, in whatever order they were put on it
   if (pinsOf !== project) readPins(project);
-  const key = [...ids].sort().join(",") + "|" + flows.map((flow) => flow.from + ">" + flow.to).sort().join(",") + "|" + shares.length + "|" + Math.round(box.width) + "x" + Math.round(box.height);
+  // (the projects on the map are of it: one put on with no session shown yet changes how the map is set out)
+  const key = project + "|" + [...ids].sort().join(",") + "|" + flows.map((flow) => flow.from + ">" + flow.to).sort().join(",") + "|" + shares.length + "|" + Math.round(box.width) + "x" + Math.round(box.height);
   // Each project's part of the map, in the order they stand; with one project, the whole map is the one part.
   const known = new Set(projectsOn().map((one) => one.id));
   const partOf = (session: Session) => (!zones ? "" : session.projectId && known.has(session.projectId) ? session.projectId : projectsOn()[0].id);
