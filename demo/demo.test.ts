@@ -4,7 +4,7 @@
 // disturbed. (Not to the system's temporary folder: the tool takes files there for scratch notes, not shared work.)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ import type { Snapshot } from "../packages/core/src/model.ts";
 const home = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), "home-test-"));
 process.env.CONTEXT_FLOW_DEMO_HOME = home; // read by world.ts when it is loaded, and by the agent this starts
 const { make, unfit } = await import("./make.ts");
-const { PROJECTS, ROOT, SESSIONS, useDemoHomes } = await import("./world.ts");
+const { PROJECTS, ROOT, SESSIONS, rolloutPath, useDemoHomes } = await import("./world.ts");
 const { serve } = await import("../packages/core/src/server.ts");
 const { pieceBlock } = await import("../packages/core/src/links.ts");
 const { noLive } = await import("../packages/core/src/live.ts");
@@ -101,6 +101,17 @@ test("a screen that asked to be told hears of it when a session of its project i
     say("docs", "하나 더 물을게");
     assert.ok(await until('"t":"changed"', 8000), "told that the records changed: " + heard);
     assert.equal(await answers(), before + 1);
+    // Codex does not write as the demo's stand-in does: it keeps the record open and adds to it, and of that the
+    // system tells nothing until the file is closed. The server finds it by looking.
+    await new Promise((resolve) => setTimeout(resolve, 1300)); // what was told of above has been looked at once
+    heard = "";
+    const fd = openSync(rolloutPath(SESSIONS.docs.id), "a");
+    try {
+      writeSync(fd, JSON.stringify({ timestamp: new Date().toISOString(), type: "event_msg", payload: { type: "token_count" } }) + "\n");
+      assert.ok(await until('"t":"changed"', 6000), "told of a record that grew while it was held open: " + heard);
+    } finally {
+      closeSync(fd);
+    }
   } finally {
     await served.close();
   }

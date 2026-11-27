@@ -1,7 +1,7 @@
 // Made-up records only: nothing here reads the user's own sessions.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -23,7 +23,7 @@ import { standalonePage } from "../src/standalone.ts";
 import { appendTransfers, dropPending, queuePieces, readBasket, readPending, readTransfers, takePending, tidyStore, writeBasket, type Pending } from "../src/store.ts";
 import { startNew, type Turn } from "../src/talk.ts";
 import { typed } from "../src/util.ts";
-import { Interest } from "../src/watch.ts";
+import { grown, Interest } from "../src/watch.ts";
 
 const scratchDir = mkdtempSync(join(tmpdir(), "context-flow-test-"));
 const line = (value: unknown) => JSON.stringify(value) + "\n";
@@ -837,4 +837,29 @@ test("a screen is told of changes to the records of its own sessions, of a recor
   assert.equal(new Interest().matters(records("/records/any.jsonl"), null), true);
   assert.equal(interest.matters({ where: "flow", path: "/flow/pending/x/y.json" }, known), true);
   assert.equal(interest.matters({ where: "live", path: "/live/1.json" }, known), true);
+});
+
+test("a record that is kept open and added to is found to have grown by looking at it, since nothing tells of it", () => {
+  const dir = join(scratchDir, "grown");
+  mkdirSync(dir, { recursive: true });
+  const held = join(dir, "held.jsonl");
+  const still = join(dir, "still.jsonl");
+  writeFileSync(still, "a line\n");
+  const fd = openSync(held, "a"); // as Codex holds a thread's record: opened once, written to, not closed
+  try {
+    const seen = new Map<string, number>();
+    // the first look only takes note
+    assert.deepEqual(grown([held, still, join(dir, "none.jsonl")], seen), []);
+    writeSync(fd, "one more line\n");
+    assert.deepEqual(grown([held, still], seen), [held]);
+    assert.deepEqual(grown([held, still], seen), []);
+    writeSync(fd, "and another\n");
+    writeFileSync(still, "a line\nmore\n");
+    assert.deepEqual(grown([held, still], seen).sort(), [held, still].sort());
+    // a record that went away has not changed: there is nothing to read
+    rmSync(still);
+    assert.deepEqual(grown([held, still], seen), []);
+  } finally {
+    closeSync(fd);
+  }
 });

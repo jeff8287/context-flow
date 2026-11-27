@@ -19,7 +19,7 @@ import { appendTransfers, dropPending, queuePieces, readBasket, takePending, tid
 import { tracePiece } from "./trace.ts";
 import { startNew, startTurn, type Turn } from "./talk.ts";
 import { oneLine } from "./util.ts";
-import { Interest, watchRecords } from "./watch.ts";
+import { grown, Interest, watchRecords, type Changed } from "./watch.ts";
 
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json" };
 
@@ -106,12 +106,26 @@ export function serve(port: number, webDir: string): Served {
       screen.tell({ t: "changed" });
     }, Math.max(150, screen.last + 1000 - Date.now()));
   };
-  const watcher = watchRecords((change) => {
+  const heard = (change: Changed) => {
     for (const screen of screens) {
       const made = built.get(screen.key);
       if (screen.interest.matters(change, made ? knownOf(made) : null)) nudge(screen);
     }
-  });
+  };
+  const watcher = watchRecords(heard);
+  // A record that its client keeps open and adds to is not told of by the watch (watch.ts says why): the records the
+  // screens know are looked at once a second for whether they have grown. Nobody listening, nothing is looked at.
+  const sizes = new Map<string, number>();
+  const looking = setInterval(() => {
+    if (!screens.size) return sizes.clear();
+    const known = new Set<string>();
+    for (const screen of screens) {
+      const made = built.get(screen.key);
+      if (made) for (const path of knownOf(made)) known.add(path);
+    }
+    for (const path of grown(known, sizes)) heard({ where: "records", path });
+  }, 1000);
+  looking.unref();
   /** A turn this server runs changes what its session is doing, and the server knows it before any record says so. */
   const follow = (turn: Turn) => {
     for (const screen of screens) nudge(screen);
@@ -410,6 +424,7 @@ export function serve(port: number, webDir: string): Served {
       process.off("SIGINT", quit);
       process.off("SIGTERM", quit);
       clearInterval(tidying);
+      clearInterval(looking);
       watcher.close();
       for (const turn of turns.values()) if (!turn.done) turn.stop();
       server.close(() => resolve());
