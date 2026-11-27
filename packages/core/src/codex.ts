@@ -177,6 +177,8 @@ export function readCodexThreads(project: Project, assigned: Map<string, string>
 export interface Rollout {
   items: Item[];
   forkedFrom: string | null;
+  /** For a fork: the thread its history lies in, and how far into that thread's record it goes. Null when the record does not say. */
+  base: { thread: string; end: number } | null;
   /** A turn was started and the record does not say it ended. */
   open: boolean;
   /** When the last turn was started. */
@@ -196,7 +198,7 @@ export async function readRollout(sessionId: string, path: string): Promise<Roll
   }
   const kept = cache.get(path);
   if (kept && kept.size === stat.size && kept.mtime === stat.mtimeMs) return kept.rollout;
-  const rollout: Rollout = { items: [], forkedFrom: null, open: false, openAt: 0, lastAt: 0 };
+  const rollout: Rollout = { items: [], forkedFrom: null, base: null, open: false, openAt: 0, lastAt: 0 };
   // Older threads, and copies of Claude Code sessions, keep what was said as user_message and agent_message events.
   const older: Item[] = [];
   let answers: Item[] = [];
@@ -220,7 +222,11 @@ export async function readRollout(sessionId: string, path: string): Promise<Roll
     const at = ms(record?.timestamp);
     if (at) rollout.lastAt = at;
     if (record?.type === "session_meta") {
-      if (typeof payload.forked_from_id === "string" && !rollout.forkedFrom) rollout.forkedFrom = payload.forked_from_id;
+      if (typeof payload.forked_from_id === "string" && !rollout.forkedFrom) {
+        rollout.forkedFrom = payload.forked_from_id;
+        const base = payload.history_base;
+        if (base && typeof base.thread_id === "string" && Number.isInteger(base.end_byte_offset)) rollout.base = { thread: base.thread_id, end: base.end_byte_offset };
+      }
       continue;
     }
     if (record?.type === "response_item") {
@@ -328,6 +334,15 @@ function stretch(path: string, from: number, to: number): string {
   } finally {
     closeSync(file);
   }
+}
+
+const keptTurns = new Map<string, string | null>();
+/** The last turn of a thread that a fork of it keeps: the last its record tells of before where the fork's history
+ *  ends. What was found is kept: a record is only ever added to, so what lies before a place in it does not change. */
+export function keptTurn(path: string, end: number): string | null {
+  const key = path + ":" + end;
+  if (!keptTurns.has(key)) keptTurns.set(key, lastTurnWithin(path, end));
+  return keptTurns.get(key) ?? null;
 }
 
 /** The last turn a record tells of in its first so many bytes. It is looked for from the end backwards. */

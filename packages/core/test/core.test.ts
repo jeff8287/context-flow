@@ -9,10 +9,10 @@ import { fileURLToPath } from "node:url";
 import { answer, makeBundle, maskBundle, readBundle } from "../src/bundle.ts";
 import { answerBefore, folderName, readClaudeSessions } from "../src/claude.ts";
 import { freshPlan } from "../src/fresh.ts";
-import { applyRollout, forkPoint, readRollout } from "../src/codex.ts";
+import { applyRollout, forkPoint, keptTurn, readRollout } from "../src/codex.ts";
 import { hookStates } from "../src/hooks.ts";
 import { serve } from "../src/server.ts";
-import { farLinks, FILES_NOTE, filesIn, filesNote, overlaps, pieceBlock, recordedLinks, transferLinks, withBlocks, withoutPieces, withPieces } from "../src/links.ts";
+import { farLinks, FILES_NOTE, filesIn, filesNote, forkedBefore, overlaps, pieceBlock, recordedLinks, transferLinks, withBlocks, withoutPieces, withPieces, type Kept } from "../src/links.ts";
 import { readClaudeLive, settleActivity, type ClaudeLive, type Live } from "../src/live.ts";
 import type { Item, Place, Project, Session, Snapshot, Transfer } from "../src/model.ts";
 import { flat, forgetPastes, pasteLinks } from "../src/paste.ts";
@@ -58,6 +58,7 @@ test("a Codex rollout gives prompts, answers and one change per file, and says w
   assert.deepEqual(rollout.items.filter((entry) => entry.kind === "change").map((entry) => entry.path), ["/work/app/a.py", "/work/app/b.py"]);
   assert.deepEqual(rollout.items.filter((entry) => entry.kind === "answer").map((entry) => Boolean(entry.final)), [false, true]);
   assert.equal(rollout.open, false);
+  assert.equal(rollout.base, null); // this record does not say how far into its parent's its history goes
   const made = session("child");
   applyRollout(made, rollout, Date.parse("2026-01-01T00:10:00Z"));
   assert.deepEqual([made.origin, made.parentId, made.activity, made.counts.changes], ["fork", "parent", "waiting", 2]);
@@ -925,6 +926,7 @@ test("a Claude Code session forked from another begins with copies of that one's
   const { transcripts } = await readClaudeSessions(project, home, Date.parse("2026-01-01T01:00:00Z"));
   const fork = transcripts.find((one) => one.session.id === "fork")!;
   assert.deepEqual([fork.session.origin, fork.session.parentId, fork.session.title], ["fork", "base", "암호가 뭐였지?"]);
+  assert.equal(fork.forkKept, "u1"); // the last request it was given: it was made before the next one
   // its items keep the numbers their records give them, whatever is left out
   assert.deepEqual(fork.items.map((item) => [item.id, item.kind, item.text]), [["fork:2", "prompt", "암호가 뭐였지?"], ["fork:3", "answer", "moonstone"]]);
   assert.equal(fork.session.startedAt, Date.parse("2026-01-01T00:02:00Z"));
@@ -941,10 +943,10 @@ test("a Claude Code session forked from another begins with copies of that one's
   writeFileSync(join(dir, "again.jsonl"), line({ type: "derived-from", v: 1, sessionId: "again", sessions: [{ type: "claude_code_session", id: "base", via: "fork" }, { type: "claude_code_session", id: "fork", via: "fork" }] })
     + base.slice(0, 2).map((row) => line({ ...row, sessionId: "again" })).join("") + line(user("again", "u4", "2026-01-01T00:03:00Z", "암호는 몇 글자지?")) + line(agent("again", "a4", "2026-01-01T00:03:05Z", "9")));
   const later = (await readClaudeSessions(project, home, Date.parse("2026-01-01T01:00:00Z"))).transcripts.find((one) => one.session.id === "again")!;
-  assert.deepEqual([later.session.origin, later.session.parentId, later.items.map((item) => item.text).join(" / ")], ["fork", "fork", "암호는 몇 글자지? / 9"]);
+  assert.deepEqual([later.session.origin, later.session.parentId, later.items.map((item) => item.text).join(" / "), later.forkKept], ["fork", "fork", "암호는 몇 글자지? / 9", "u1"]);
 });
 
-test("a Codex thread is forked after the turn before the request to be said again; a fork's own first request, where the fork itself was made", () => {
+test("a Codex thread is forked after the turn before the request to be said again; a fork's own first request, where the fork itself was made", async () => {
   const dir = join(scratchDir, "codex-fork");
   mkdirSync(dir, { recursive: true });
   const item = (turn: string, kind: Item["kind"], n: number, of = "base"): Item => ({ id: of + ":" + n, sessionId: of, turnId: turn, kind, at: n, text: kind + " " + n });
@@ -963,6 +965,10 @@ test("a Codex thread is forked after the turn before the request to be said agai
   const fork = session("fork", { origin: "fork", parentId: "base", recordPath: join(dir, "fork.jsonl") });
   const first = item("f1", "prompt", 0, "fork");
   assert.deepEqual(forkPoint(fork, [first, item("f1", "answer", 1, "fork")], first, pathOf), { from: "base", at: "t2" });
+  // read as a record, the fork says the same of itself; and the last turn it keeps of the base is found from that
+  const read = await readRollout("fork", join(dir, "fork.jsonl"));
+  assert.deepEqual(read?.base, { thread: "base", end: Buffer.byteLength(kept) });
+  assert.equal(keptTurn(join(dir, "base.jsonl"), read!.base!.end), "t2");
   // a fork of that fork, made before anything was said in it: its history is still the base's
   writeFileSync(join(dir, "again.jsonl"), line({ type: "session_meta", payload: { id: "again", forked_from_id: "fork", history_base: { thread_id: "fork", end_byte_offset: Buffer.byteLength(readFileSync(join(dir, "fork.jsonl"), "utf8").split("\n")[0]) + 1 } } }));
   const again = session("again", { origin: "fork", parentId: "fork", recordPath: join(dir, "again.jsonl") });
@@ -1064,4 +1070,34 @@ test("the pictures that went with a request are read from the client's record, w
     if (before === undefined) delete process.env.CONTEXT_FLOW_HOME;
     else process.env.CONTEXT_FLOW_HOME = before;
   }
+});
+
+test("a fork's line says which request of its parent it was made before, for a fork of either client, and a piece is followed into a fork only if it was said before that request", () => {
+  const item = (of: string, n: number, kind: Item["kind"], turn: string, at: number, text = kind + " " + n): Item => ({ id: of + ":" + n, sessionId: of, turnId: turn, kind, at, text });
+  // a session of three requests
+  const base = [item("base", 0, "prompt", "t1", 100), item("base", 1, "answer", "t1", 110, "원인은 잠금 없이 읽고 쓰는 데 있습니다. 좌석 행을 잠그면 막을 수 있습니다. 이 문장은 따라가는 조각입니다."),
+    item("base", 2, "prompt", "t2", 200), item("base", 3, "change", "t2", 205), item("base", 4, "answer", "t2", 210, "두 번째 답에서 나온 결론입니다. 유일 제약을 거는 쪽이 더 낫다는 것, 이것도 따라가 볼 조각입니다."),
+    item("base", 5, "prompt", "t3", 300), item("base", 6, "answer", "t3", 310)];
+  const fork = (id: string, parent: string, at: number) => session(id, { origin: "fork", parentId: parent, startedAt: at, updatedAt: at });
+  const sessions = [session("base", { startedAt: 100 }), fork("codex-fork", "base", 400), fork("codex-end", "base", 410), fork("codex-lost", "base", 420), fork("unsaid", "base", 430)];
+  const said = [...base, item("codex-fork", 0, "prompt", "f1", 400), item("codex-end", 0, "prompt", "e1", 410)];
+  // Codex names the last turn the fork keeps: the fork was made before the first request after that turn
+  const kept = new Map<string, Kept>([["codex-fork", { turn: "t1" }], ["codex-end", { turn: "t3" }], ["codex-lost", { turn: "no such turn" }]]);
+  const before = forkedBefore(sessions, said, kept);
+  assert.deepEqual([...before], [["codex-fork", "base:2"]]); // made after all that was said: no such request; a turn that is not there, or nothing said of it: not known
+  const { links } = recordedLinks(sessions, before);
+  assert.deepEqual(links.map((link) => [link.to.sessionId, link.from.itemId ?? null]), [["codex-fork", "base:2"], ["codex-end", null], ["codex-lost", null], ["unsaid", null]]);
+  // the parent is spoken to again after a fork was made at its end: that request is one the fork does not know
+  assert.deepEqual([...forkedBefore(sessions, [...said, item("base", 7, "prompt", "t4", 500)], kept)], [["codex-fork", "base:2"], ["codex-end", "base:7"]]);
+  // Claude Code names the last request the fork was given. A fork of a fork, made before anything was said in it,
+  // was given none of that fork's own: it was made before the fork's first request.
+  const claude = [session("c", { client: "claude" }), { ...fork("c-fork", "c", 400), client: "claude" as const }, { ...fork("c-again", "c-fork", 500), client: "claude" as const }, { ...fork("c-odd", "c", 600), client: "claude" as const }];
+  const talk = [item("c", 0, "prompt", "u1", 100), item("c", 1, "answer", "u1", 110), item("c", 2, "prompt", "u2", 200), item("c", 3, "answer", "u2", 210), item("c-fork", 2, "prompt", "u3", 400), item("c-fork", 3, "answer", "u3", 410), item("c-again", 2, "prompt", "u4", 500)];
+  assert.deepEqual([...forkedBefore(claude, talk, new Map([["c-fork", { request: "u1" }], ["c-again", { request: "u1" }], ["c-odd", { request: "not there" }]]))], [["c-fork", "c:2"], ["c-again", "c-fork:2"]]);
+  // A piece of the first answer went into the fork made before the second request; a piece of the second answer did
+  // not, though the fork began long after it was said. The fork made at the end has both.
+  const bodies = new Map(said.map((one) => [one.id, one]));
+  const into = (itemId: string) => tracePiece({ sessionId: "base", itemId, start: 0, end: 30 }, links, bodies, sessions).filter((step) => step.dir === "onward").map((step) => step.link.to.sessionId).sort();
+  assert.deepEqual(into("base:1"), ["codex-end", "codex-fork", "codex-lost", "unsaid"]);
+  assert.deepEqual(into("base:4"), ["codex-end", "codex-lost", "unsaid"]);
 });

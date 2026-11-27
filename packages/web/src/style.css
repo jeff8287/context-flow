@@ -259,6 +259,11 @@ path.press { fill: none; stroke: transparent; stroke-width: 18; pointer-events: 
 .acts button { height: 22px; padding: 0 10px; border: 1px solid var(--edge-strong); border-radius: 11px; background: var(--surface); color: var(--muted); font-size: 11.5px; line-height: 1; white-space: nowrap; box-shadow: var(--lift); }
 .acts button:hover { color: var(--ink); border-color: var(--ink); }
 .msg.redoing { outline: 2px solid var(--ink); outline-offset: 3px; }
+.ways { display: flex; align-items: center; justify-content: flex-end; gap: 2px; margin: 6px -5px -3px 0; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.ways span { min-width: 26px; text-align: center; cursor: default; }
+.ways button { width: 20px; height: 20px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font-size: 15px; line-height: 1; }
+.ways button:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 10%, transparent); }
+.ways button:disabled { color: var(--faint); opacity: .5; cursor: default; }
 .talk > .after-redo { opacity: .32; }
 .fork-note { align-self: stretch; display: flex; align-items: center; gap: 7px; word-break: keep-all; padding: 7px 10px; border: 1px dashed var(--edge-strong); border-radius: 10px; background: transparent; color: var(--muted); font-size: 12px; line-height: 1.4; text-align: left; }
 .fork-note svg { flex: none; width: 14px; height: 14px; }

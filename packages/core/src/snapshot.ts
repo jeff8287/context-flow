@@ -2,9 +2,9 @@
 // Several projects can be put on one map: they are then read one by one and seen as one.
 import { basename } from "node:path";
 import { readClaudeSessions } from "./claude.ts";
-import { applyRollout, readCodexProjects, readCodexThreads, readRollout } from "./codex.ts";
+import { applyRollout, keptTurn, readCodexProjects, readCodexThreads, readRollout } from "./codex.ts";
 import { hookStates } from "./hooks.ts";
-import { farLinks, overlaps, recordedLinks, transferLinks, withoutPieces } from "./links.ts";
+import { farLinks, forkedBefore, overlaps, recordedLinks, transferLinks, withoutPieces, type Kept } from "./links.ts";
 import { readLive, settleActivity, type Live } from "./live.ts";
 import { pasteLinks } from "./paste.ts";
 import type { Item, ItemHead, Project, Session, Snapshot, Transfer, Waiting } from "./model.ts";
@@ -74,10 +74,11 @@ export function nearestProject(cwd: string, projects: Project[]): Project | unde
 }
 
 /** One project's sessions with what they said and changed, as the records and the live processes have them. */
-async function readProject(project: Project, assigned: Map<string, string>, now: number, live: Live): Promise<{ sessions: Session[]; items: Item[]; notes: string[] }> {
+async function readProject(project: Project, assigned: Map<string, string>, now: number, live: Live): Promise<{ sessions: Session[]; items: Item[]; notes: string[]; forks: Map<string, Fork> }> {
   const notes: string[] = [];
   const sessions: Session[] = [];
   const items: Item[] = [];
+  const forks = new Map<string, Fork>();
   const codex = readCodexThreads(project, assigned);
   notes.push(...codex.notes);
   let unread = 0;
@@ -93,6 +94,7 @@ async function readProject(project: Project, assigned: Map<string, string>, now:
     else session.nowFile = null;
     sessions.push(session);
     items.push(...rollout.items);
+    if (rollout.base) forks.set(session.id, { base: rollout.base });
   }
   if (unread) notes.push("기록 파일을 읽지 못한 Codex 스레드 " + unread + "개는 뺐습니다.");
   const claude = await readClaudeSessions(project, undefined, now);
@@ -102,6 +104,7 @@ async function readProject(project: Project, assigned: Map<string, string>, now:
     transcript.session.nowFile = transcript.session.activity === "running" ? transcript.items.findLast((item) => item.kind === "change")?.path ?? null : null;
     sessions.push({ ...transcript.session }); // its own copy: the reader keeps the one it made, and what is settled here is this snapshot's
     items.push(...transcript.items);
+    if (transcript.forkKept) forks.set(transcript.session.id, { request: transcript.forkKept });
   }
   // A copy Codex made of a Claude Code session, never talked to since, is the same conversation twice: keep the original.
   const have = new Set(sessions.map((session) => session.id));
@@ -111,8 +114,12 @@ async function readProject(project: Project, assigned: Map<string, string>, now:
     for (let at = sessions.length - 1; at >= 0; at -= 1) if (copies.has(sessions[at].id)) sessions.splice(at, 1);
     for (let at = items.length - 1; at >= 0; at -= 1) if (copies.has(items[at].sessionId)) items.splice(at, 1);
   }
-  return { sessions, items, notes };
+  return { sessions, items, notes, forks };
 }
+
+/** What a fork's own record says of where it was made. base (Codex): the thread its history lies in and how far
+ *  into that thread's record it goes. request (Claude Code): the last request it was given. */
+interface Fork { base?: { thread: string; end: number }; request?: string }
 
 /** One project as the screen sees it; or several put on one map, as one: every session of any of them, and what
  *  ties them, across the projects as within them. A session that lies in more than one of them (a project's folder
@@ -124,8 +131,10 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
   const sessions: Session[] = [];
   const items: Item[] = [];
   const holders = new Map<string, Project[]>();
+  const forks = new Map<string, Fork>();
   for (const one of projects) {
     const part = await readProject(one, assigned, now, live);
+    for (const [id, fork] of part.forks) forks.set(id, fork);
     notes.push(...part.notes.map((note) => (many ? one.name + ": " + note : note)));
     const fresh = new Set<string>();
     for (const session of part.sessions) {
@@ -143,7 +152,19 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
   if (many) for (const session of sessions) session.projectId = (nearestProject(session.cwd, holders.get(session.id)!) ?? holders.get(session.id)![0]).id;
   const whole: Project = many ? { id: projects.map((one) => one.id).join(","), name: projects.map((one) => one.name).join(" + "), roots: [...new Set(projects.flatMap((one) => one.roots))] } : projects[0];
   sessions.sort((a, b) => a.startedAt - b.startedAt);
-  const recorded = recordedLinks(sessions);
+  // Where each fork was made, in its parent's talk. A Codex fork says how far into the record of a thread its history
+  // goes: when that thread is its parent, the last turn before that place is the last it keeps.
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const kept = new Map<string, Kept>();
+  for (const [id, fork] of forks) {
+    const parent = byId.get(byId.get(id)?.parentId ?? "");
+    if (fork.request) kept.set(id, { request: fork.request });
+    else if (fork.base && parent?.recordPath && fork.base.thread === parent.id) {
+      const turn = keptTurn(parent.recordPath, fork.base.end);
+      if (turn) kept.set(id, { turn });
+    }
+  }
+  const recorded = recordedLinks(sessions, forkedBefore(sessions, items, kept));
   if (recorded.outside) notes.push("부모가 " + (many ? "이 프로젝트들" : "이 프로젝트") + " 밖에 있는 세션 " + recorded.outside + "개는 연결 없이 그렸습니다.");
   const here = new Set(sessions.map((session) => session.id));
   const sent = transferLinks(transfers.filter((transfer) => here.has(transfer.from.sessionId) && here.has(transfer.to.sessionId)), items);

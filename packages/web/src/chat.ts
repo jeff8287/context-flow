@@ -436,6 +436,59 @@ function ties(session: Session): HTMLElement {
   return box;
 }
 
+/** The ways the talk went on from where a request stands: the request itself, and the first request of each fork
+ *  that was made before it (a request said again in other words is one). A fork of such a fork, made before its
+ *  first request, is another way on from the same place. In the order they were said. */
+function waysFrom(item: Said): { sessionId: string; itemId: string; at: number }[] {
+  const forks = (state.snap?.links ?? []).filter((link) => link.kind === "fork" && link.from.itemId && state.sessions.has(link.to.sessionId));
+  // most requests are where the talk simply went on: only one a fork was made before, or a fork's own, is looked into
+  if (!forks.some((link) => link.from.itemId === item.id || link.to.sessionId === item.sessionId)) return [];
+  const firstOf = (session: string) => state.snap!.items.find((head) => head.sessionId === session && head.kind === "prompt");
+  const heads = new Map(state.snap!.items.map((head) => [head.id, head]));
+  // up, while this is the first request of a fork that was made before a request: that request is the same place
+  let root = { sessionId: item.sessionId, itemId: item.id };
+  for (let guard = 0; guard < 16; guard += 1) {
+    const came = forks.find((link) => link.to.sessionId === root.sessionId);
+    if (!came || firstOf(root.sessionId)?.id !== root.itemId) break;
+    root = { sessionId: came.from.sessionId, itemId: came.from.itemId! };
+  }
+  // and down from there
+  const out = [root];
+  for (let at = 0; at < out.length && out.length < 64; at += 1) {
+    for (const link of forks) {
+      const first = link.from.itemId === out[at].itemId ? firstOf(link.to.sessionId) : undefined;
+      if (first && !out.some((one) => one.itemId === first.id)) out.push({ sessionId: link.to.sessionId, itemId: first.id });
+    }
+  }
+  return out.length > 1 ? out.map((one) => ({ ...one, at: heads.get(one.itemId)?.at ?? 0 })).sort((a, b) => a.at - b.at) : [];
+}
+
+/** Under a request from which the talk went on in more than one way: which of them this is, and the steps to the others. */
+function waysBar(item: Said): HTMLElement | null {
+  const ways = waysFrom(item);
+  const here = ways.findIndex((one) => one.itemId === item.id);
+  if (here === -1) return null;
+  const bar = h("div", "ways");
+  const step = (by: number, sign: string, label: string) => {
+    const to = ways[here + by];
+    const made = h("button", "", sign);
+    made.type = "button";
+    made.disabled = !to;
+    made.setAttribute("aria-label", label);
+    if (to) {
+      made.title = label + ": ‘" + flat(name(to.sessionId), 40) + "’";
+      made.onclick = () => act.openChat(to.sessionId, to.itemId);
+      made.onpointerenter = () => act.hover(to.sessionId);
+      made.onpointerleave = () => act.hover(null);
+    }
+    return made;
+  };
+  const count = h("span", "", here + 1 + "/" + ways.length);
+  count.title = "이 자리에서 대화가 " + ways.length + "갈래로 이어졌습니다. 요청을 고쳐 보내거나 세션을 갈라 낸 것입니다. 넘기면 그 갈래의 세션이 열립니다";
+  bar.append(step(-1, "‹", "앞 갈래"), count, step(1, "›", "다음 갈래"));
+  return bar;
+}
+
 function bubble(item: Said, who: "user" | "agent"): HTMLElement {
   const made = h("div", "msg " + who);
   made.dataset.item = item.id;
@@ -465,6 +518,8 @@ function bubble(item: Said, who: "user" | "agent"): HTMLElement {
   carries(grab, () => { const spec = specOf(item.id, 0, whole()); return spec ? [spec] : []; });
   acts.append(grab);
   made.append(acts);
+  const ways = who === "user" ? waysBar(item) : null;
+  if (ways) made.append(ways);
   const long = who === "user" && typedPart(item.text).length > 600;
   if (long) text.classList.add("clip");
   if (item.more || long) {
@@ -527,10 +582,12 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
   // A fork's talk is what was said in the fork: what it was given when it was made is the other session's.
   const base = from === 0 && session.origin === "fork" && session.parentId ? state.sessions.get(session.parentId) : undefined;
   if (base) {
+    // where in the other session it was made, when that is known: the request it was made before
+    const before = state.snap?.links.find((link) => link.kind === "fork" && link.to.sessionId === session.id)?.from.itemId;
     const note = h("button", "fork-note");
     note.innerHTML = ICON.branch;
-    note.append(h("span", "", "‘" + flat(base.title, 30) + "’에서 갈라져 나온 세션입니다. 갈라지기 전의 대화는 그 세션에 있습니다."), h("u", "", "열기"));
-    note.onclick = () => act.openChat(base.id);
+    note.append(h("span", "", "‘" + flat(base.title, 30) + "’에서 갈라져 나온 세션입니다. 갈라지기 전의 대화는 그 세션에 있습니다."), h("u", "", before ? "갈라진 자리 열기" : "열기"));
+    note.onclick = () => act.openChat(base.id, before);
     note.onpointerenter = () => act.hover(base.id);
     note.onpointerleave = () => act.hover(null);
     body.append(note);
@@ -1378,14 +1435,17 @@ function linkCard(link: Link, facing: "from" | "to" | "both"): HTMLElement {
   head.append(h("span", "", facing === "both" ? kind : (facing === "from" ? "← " : "→ ") + kind));
   if (facing !== "both") head.append(h("b", "", name(other)));
   head.append(h("span", "ctx-when", day(link.to.at) + " " + clock(link.to.at)));
-  const body = h("div", "ctx-text" + (ofText(link) ? "" : " whole"), ofText(link) ? (link.excerpt ?? "") + ((link.chars ?? 0) > (link.excerpt?.length ?? 0) ? "…" : "") : STANDS[link.kind] ?? LINK[link.kind]);
+  // a fork made before a request took what was said before that request, and no more
+  const before = link.kind === "fork" && link.from.itemId ? state.snap?.items.find((head) => head.id === link.from.itemId) : undefined;
+  const whole = before ? "‘" + flat(before.label, 36) + "’ 요청 앞까지의 대화" : STANDS[link.kind] ?? LINK[link.kind];
+  const body = h("div", "ctx-text" + (ofText(link) ? "" : " whole"), ofText(link) ? (link.excerpt ?? "") + ((link.chars ?? 0) > (link.excerpt?.length ?? 0) ? "…" : "") : whole);
   const row = h("div", "ctx-row");
   const jump = (label: string, session: string, item?: string, span?: Span) => {
     const made = h("button", "", label);
     made.onclick = () => act.openChat(session, item, span);
     row.append(made);
   };
-  jump("나온 자리", link.from.sessionId, link.from.itemId, fromSpan(link));
+  jump(before ? "갈라진 자리" : "나온 자리", link.from.sessionId, link.from.itemId, fromSpan(link));
   jump("받은 자리", link.to.sessionId, link.to.itemId, toSpan(link));
   if (ofText(link) && link.from.itemId) {
     const trace = h("button", "", "역추적");

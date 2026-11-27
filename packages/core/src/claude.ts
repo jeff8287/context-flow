@@ -22,6 +22,9 @@ export function folderName(cwd: string): string {
 export interface Transcript {
   session: Session;
   items: Item[];
+  /** For a fork: the last request it was given when it was made (the id of that request's record, which is the
+   *  same in the record of the session it was forked from). */
+  forkKept?: string;
   /** A request was made and the record does not say the answer to it ended. */
   open: boolean;
 }
@@ -58,6 +61,7 @@ async function readTranscript(path: string, id: string, parentId: string | null,
   const sources = new Map<Item, string>();
   /** The sessions this one comes from by forking, the nearest last: a fork of a fork names both. */
   let forkOf: string[] = [];
+  let forkKept: string | undefined;
   let cwd = "";
   let model: string | null = null;
   let first = 0;
@@ -152,6 +156,7 @@ async function readTranscript(path: string, id: string, parentId: string | null,
     for (const one of forkOf) for (const record of await recordIds(join(dirname(path), one + ".jsonl"))) theirs.add(record);
     if (theirs.size) {
       const own = items.filter((item) => !theirs.has(sources.get(item) ?? ""));
+      forkKept = items.findLast((item) => item.kind === "prompt" && theirs.has(sources.get(item) ?? ""))?.turnId ?? undefined;
       items.length = 0;
       items.push(...own);
       first = items[0]?.at ?? first;
@@ -182,6 +187,7 @@ async function readTranscript(path: string, id: string, parentId: string | null,
         },
         items,
         open,
+        ...(forkKept ? { forkKept } : {}),
       }
     : null;
   if (transcript && transcript.session.activity === "running") {
