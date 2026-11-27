@@ -164,7 +164,9 @@ function drawLegend() {
     (state.graph.flows.some((flow) => flow.links.some((link) => link.grade === "paste"))
       ? '<span><svg width="30" height="10"><path d="M1 5 H22" stroke="currentColor" stroke-width="2.4" stroke-dasharray="6 4"/><path d="M29 5 l-8 -4.5 v9 z" fill="currentColor"/></svg>붙여넣은 흔적</span>'
       : "") +
-    '<span><svg width="24" height="10"><path d="M1 5 H23" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round"/></svg>같은 파일을 고침</span>';
+    '<span><svg width="24" height="10"><path d="M1 5 H23" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round"/></svg>같은 파일을 고침</span>' +
+    // the shape at the end of a session's line says its client: the ones on the map
+    (["codex", "claude"] as const).filter((client) => [...state.on].some((id) => state.sessions.get(id)?.client === client)).map((client) => '<span><i class="client-mark ' + client + '"></i>' + CLIENT[client] + "</span>").join("");
 }
 
 /** What is to be exported, and whether it can be: the sessions now on the map, of a project read from the clients' own records. */
