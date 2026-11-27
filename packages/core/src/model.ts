@@ -66,6 +66,9 @@ export type ItemHead = Omit<Item, "text" | "added"> & { size: number; label: str
 export interface End {
   sessionId: string;
   at: number;
+  /** The item the link is about. For the line of a fork, at the parent's end: the request of the parent that the
+   *  fork was made before (the fork knows what was said before it, and not it nor what followed). Left out when
+   *  the parent has said nothing since the fork was made. */
   itemId?: string;
   /** Character range within the item's text, when the link is about a part of it. */
   start?: number;

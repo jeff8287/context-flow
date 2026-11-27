@@ -211,6 +211,9 @@ test("a request said again begins a fork of the session as it stood before that 
       const fork = made.snapshot.sessions.find((one) => one.id === forked.body.session)!;
       assert.deepEqual([fork.origin, fork.parentId, fork.title, fork.cwd], ["fork", session.id, "그다음은 저것으로 하자", PROJECTS[session.project].root]);
       assert.ok(made.snapshot.links.some((link) => link.kind === "fork" && link.from.sessionId === session.id && link.to.sessionId === fork.id));
+      // the fork's line says where it was made: before the request that was said again
+      const line = made.snapshot.links.find((link) => link.kind === "fork" && link.to.sessionId === fork.id)!;
+      assert.equal(line.from.itemId, last.id);
       const said = of(made, fork.id);
       assert.deepEqual(said.map((item) => item.kind), ["prompt", "answer"]); // what it was given is the other session's, not its own
       assert.match(said[1].text, new RegExp("요청 " + (prompts.length - 1) + "개와 그 답까지를 물려받았"));
@@ -224,6 +227,9 @@ test("a request said again begins a fork of the session as it stood before that 
       const later = await ended(again.body.session);
       const second = later.snapshot.sessions.find((one) => one.id === again.body.session)!;
       assert.deepEqual([second.origin, second.parentId], ["fork", again.body.from]);
+      // Said again, the fork's own request is another way on from the same place. Codex forks the thread the fork came
+      // from, before the same request; Claude Code forks the fork, before its first request.
+      assert.equal(later.snapshot.links.find((link) => link.kind === "fork" && link.to.sessionId === second.id)!.from.itemId, session.client === "codex" ? last.id : said[0].id);
       assert.match(of(later, second.id)[1].text, new RegExp("요청 " + (prompts.length - 1) + "개와 그 답까지를 물려받았"));
       // an earlier request: only what came before it is kept
       const early = await post("/api/fork", { project, session: session.id, item: prompts.at(-2)!.id, text: "먼저 저것부터" });

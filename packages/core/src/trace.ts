@@ -93,7 +93,12 @@ export function tracePiece(piece: Piece, links: Link[], bodies: Map<string, Item
       steps.push({ dir: "onward", depth, link: beyond(one), far: place(one) });
     }
     for (const link of whole) {
-      if (seenOn.has(link.id) || topOf(link.from.sessionId) !== session || link.to.at < at) continue;
+      if (seenOn.has(link.id) || topOf(link.from.sessionId) !== session) continue;
+      // A fork has what its parent had said before the request it was made before, however long after that it was
+      // made (a request said again in other words is forked before that request). One that is not known to have
+      // been made before a request has what was said until it began.
+      const until = link.kind === "fork" && link.from.itemId ? bodies.get(link.from.itemId)?.at : undefined;
+      if (until !== undefined ? at >= until : link.to.at < at) continue;
       seenOn.add(link.id);
       steps.push({ dir: "onward", depth, link });
       onward(topOf(link.to.sessionId), link.to.at, held, depth + 1);

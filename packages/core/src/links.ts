@@ -106,8 +106,48 @@ export function farLinks(transfers: Transfer[], sessions: Session[], items: Item
 
 const KIND: Record<Origin, LinkKind | null> = { user: null, fork: "fork", spawned: "spawn", subagent: "subagent", side: "side", imported: "import" };
 
-/** A link from each session's recorded parent to it, at the moment the child began. */
-export function recordedLinks(sessions: Session[]): { links: Link[]; outside: number } {
+/** What a fork was given when it was made, as its client's record tells it. turn (Codex): the last turn of the
+ *  parent that it keeps. request (Claude Code): the last request it was given, by the id of that request's record. */
+export interface Kept { turn?: string; request?: string }
+
+/** For each fork: the request of its parent that it was made before. The fork knows what was said before that
+ *  request, and neither it nor what followed: a request said again in other words is such a fork, made before the
+ *  request it says again. A fork made after all its parent had said has no such request (until the parent is spoken
+ *  to again: that request is then one the fork does not know).
+ *  items: every session's, each session's in the order they were said. */
+export function forkedBefore(sessions: Session[], items: Item[], kept: Map<string, Kept>): Map<string, string> {
+  const bySession = new Map<string, Item[]>();
+  for (const item of items) {
+    const list = bySession.get(item.sessionId);
+    if (list) list.push(item);
+    else bySession.set(item.sessionId, [item]);
+  }
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const out = new Map<string, string>();
+  for (const fork of sessions) {
+    const told = fork.origin === "fork" && fork.parentId ? kept.get(fork.id) : undefined;
+    const parent = fork.parentId ? byId.get(fork.parentId) : undefined;
+    if (!told || !parent) continue;
+    const said = bySession.get(parent.id) ?? [];
+    let last = -1; // the last of the parent's items that the fork knows
+    if (told.turn !== undefined) {
+      last = said.findLastIndex((item) => item.turnId === told.turn);
+      if (last === -1) continue; // the parent's record does not show that turn: where the fork was made is not known
+    } else if (told.request !== undefined) {
+      last = said.findIndex((item) => item.kind === "prompt" && item.turnId === told.request);
+      // A request that is not the parent's own is one the parent was itself given, as a fork: this fork was made
+      // before anything was said in the parent, and knows none of it.
+      if (last === -1 && parent.origin !== "fork") continue;
+    } else continue;
+    const next = said.find((item, at) => at > last && item.kind === "prompt");
+    if (next) out.set(fork.id, next.id);
+  }
+  return out;
+}
+
+/** A link from each session's recorded parent to it, at the moment the child began. before: for a fork, the request
+ *  of the parent it was made before (forkedBefore). */
+export function recordedLinks(sessions: Session[], before: Map<string, string> = new Map()): { links: Link[]; outside: number } {
   const known = new Set(sessions.map((session) => session.id));
   const links: Link[] = [];
   let outside = 0;
@@ -122,7 +162,7 @@ export function recordedLinks(sessions: Session[]): { links: Link[]; outside: nu
       id: kind + ":" + session.parentId + ">" + session.id,
       grade: "recorded",
       kind,
-      from: { sessionId: session.parentId, at: session.startedAt },
+      from: { sessionId: session.parentId, at: session.startedAt, ...(kind === "fork" && before.has(session.id) ? { itemId: before.get(session.id) } : {}) },
       to: { sessionId: session.id, at: session.startedAt },
     });
   }
