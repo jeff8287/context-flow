@@ -110,10 +110,11 @@ async function readTranscript(path: string, id: string, parentId: string | null,
         text = content.map((block) => (block?.type === "text" && typeof block.text === "string" ? block.text : "")).filter(Boolean).join("\n");
       }
       text = record.isMeta ? "" : typed(text);
+      const images = Array.isArray(content) ? content.filter((block) => block?.type === "image").length : 0;
       if (text && !/^(\[Request interrupted|Caveat:)/.test(text)) {
         close();
         turnId = typeof record.uuid === "string" ? record.uuid : turnId;
-        push("prompt", text);
+        push("prompt", text, images ? { images } : {});
         open = true;
       }
       const result = record.toolUseResult;

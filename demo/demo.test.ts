@@ -13,7 +13,7 @@ import type { Snapshot } from "../packages/core/src/model.ts";
 const home = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), "home-test-"));
 process.env.CONTEXT_FLOW_DEMO_HOME = home; // read by world.ts when it is loaded, and by the agent this starts
 const { make, unfit } = await import("./make.ts");
-const { PROJECTS, ROOT, SESSIONS, rolloutPath, useDemoHomes } = await import("./world.ts");
+const { PROJECTS, ROOT, SESSIONS, rolloutPath, useDemoHomes, useStandIns } = await import("./world.ts");
 const { serve } = await import("../packages/core/src/server.ts");
 const { pieceBlock } = await import("../packages/core/src/links.ts");
 const { noLive } = await import("../packages/core/src/live.ts");
@@ -111,6 +111,52 @@ test("a screen that asked to be told hears of it when a session of its project i
       assert.ok(await until('"t":"changed"', 6000), "told of a record that grew while it was held open: " + heard);
     } finally {
       closeSync(fd);
+    }
+  } finally {
+    await served.close();
+  }
+});
+test("a message from the screen takes pictures, other files and another model along, for a session of either client", { skip }, async () => {
+  useDemoHomes();
+  useStandIns();
+  const served = serve(0, join(ROOT, "packages", "web", "dist"));
+  const at = "http://127.0.0.1:" + (await served.ready);
+  const post = async (path: string, payload: unknown) => {
+    const got = await fetch(at + path, { method: "POST", headers: { "content-type": "application/json", origin: at }, body: JSON.stringify(payload) });
+    return { status: got.status, body: (await got.json()) as Record<string, any> };
+  };
+  const dot = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="; // a picture of one dot
+  const files = [{ name: "dot.png", type: "image/png", data: dot }, { name: "../odd name;.log", type: "text/plain", data: Buffer.from("line one\nline two\n").toString("base64") }];
+  try {
+    assert.deepEqual((await (await fetch(at + "/api/models?client=codex")).json()).models.map((one: { id: string }) => one.id), ["demo-codex-1", "demo-codex-mini"]);
+    for (const [name, model] of [["docs", "demo-codex-mini"], ["form", "haiku"]] as const) {
+      const session = SESSIONS[name];
+      const project = PROJECTS[session.project].id;
+      // pictures and files go with words that say what is wanted of them
+      assert.equal((await post("/api/send", { project, session: session.id, text: "", files })).status, 400);
+      const sent = await post("/api/send", { project, session: session.id, text: "이 그림과 로그를 봐줘", files, model });
+      assert.equal(sent.status, 200, JSON.stringify(sent.body));
+      let made: Awaited<ReturnType<typeof read>> | null = null;
+      for (let tries = 0; tries < 40; tries += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if ((await (await fetch(at + "/api/turn/active?session=" + session.id)).json()).turn) continue;
+        made = await read();
+        break;
+      }
+      assert.ok(made, "the turn ended");
+      const said = [...made.bodies.values()].filter((item) => item.sessionId === session.id);
+      const asked = said.findLast((item) => item.kind === "prompt")!;
+      const answered = said.findLast((item) => item.kind === "answer")!;
+      assert.equal(asked.images, 1);
+      assert.match(asked.text, /odd name_\.log/); // the name cannot lead out of the folder it was kept in
+      assert.doesNotMatch(asked.text, /\.\.\//);
+      assert.match(answered.text, /함께 받은 그림 1개: image\/png/);
+      assert.match(answered.text, /함께 받은 파일 1개: odd name_\.log \(18바이트, 읽을 수 있습니다\)/);
+      assert.match(answered.text, new RegExp("이번 답의 모델: " + model));
+      // the session is named after what was typed, and goes on with the model that was asked for
+      const now = made.snapshot.sessions.find((one) => one.id === session.id)!;
+      assert.equal(now.model, model);
+      assert.equal(made.snapshot.items.find((item) => item.id === asked.id)?.label, "이 그림과 로그를 봐줘");
     }
   } finally {
     await served.close();

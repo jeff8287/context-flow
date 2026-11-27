@@ -5,7 +5,10 @@
 //   node                            the node this tool runs on, for the hook to run on too
 //   basket.json                     the pieces picked on the screen and kept: one basket, whatever project or
 //                                   browser the screen is opened in
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+//   uploads/<when>-<id>/<name>      the pictures and other files sent along with a message from the screen: the
+//                                   client is handed them from here, and the agent reads the others from here
+import { randomBytes } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Piece, Place, Transfer } from "./model.ts";
 import { HOME } from "./home.ts";
@@ -117,12 +120,46 @@ export function dropPending(sessionId: string, id: string): boolean {
   return true;
 }
 
+/** A file sent along with a message, as the screen hands it over: its name, its kind, and its bytes in base64. */
+export interface Upload { name: string; type: string; data: string }
+/** Where such a file was put. image: a picture the clients take as one; any other file the agent is told the path of. */
+export interface Saved { path: string; name: string; type: string; image: boolean }
+
+/** The kinds of picture both clients take as a picture. */
+const PICTURES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+export const UPLOAD_ROOM = 10 * 1024 * 1024;
+export const UPLOAD_MOST = 8;
+
+/** Keep the files that go with a message. dir: the folder they were put in, one for each message, or null when
+ *  there were none. Throws with the reason when they are more or larger than is taken. */
+export function saveUploads(files: unknown, now = Date.now()): { dir: string | null; saved: Saved[] } {
+  const list = (Array.isArray(files) ? files : []).filter((one): one is Upload => Boolean(one) && typeof one.name === "string" && typeof one.type === "string" && typeof one.data === "string");
+  if (!list.length) return { dir: null, saved: [] };
+  if (list.length > UPLOAD_MOST) throw new Error("한 번에 " + UPLOAD_MOST + "개까지 붙일 수 있습니다");
+  const bodies = list.map((one) => Buffer.from(one.data, "base64"));
+  if (bodies.reduce((sum, body) => sum + body.length, 0) > UPLOAD_ROOM) throw new Error("붙인 것이 모두 합쳐 10MB를 넘습니다");
+  const dir = join(home(), "uploads", new Date(now).toISOString().replace(/[-:]/g, "").slice(0, 15) + "-" + randomBytes(3).toString("hex"));
+  mkdirSync(dir, { recursive: true });
+  const taken = new Set<string>();
+  const saved = list.map((one, at): Saved => {
+    // a name is kept as it was but for what could lead out of the folder or trip a shell
+    let name = (one.name.split(/[\\/]/).pop() ?? "").replace(/[\u0000-\u001f"'\x60$;&|<>*?]/g, "_").replace(/^\.+/, "").slice(-120) || "file";
+    for (let n = 2; taken.has(name); n += 1) name = name.replace(/(\.[^.]*)?$/, (ext) => "-" + n + ext);
+    taken.add(name);
+    const path = join(dir, name);
+    writeFileSync(path, bodies[at]);
+    return { path, name, type: one.type, image: PICTURES.has(one.type) };
+  });
+  return { dir, saved };
+}
+
 /** Clear away what was left behind by something that stopped half way. The server does this when it starts, and
  *  now and then after.
  *  A piece that was taken and never let go (by a hook that died, or by a server that did, in the middle of handing
  *  it over) waits again; unless it was written down as gone, and then the session's record says whether it arrived.
  *  Only what has lain for ten minutes is touched: a piece being handed over right now is left alone.
- *  Files half written, and the whole texts kept for long pieces (pieces/<id>.txt) once they are two weeks old, go. */
+ *  Files half written, the whole texts kept for long pieces (pieces/<id>.txt) once they are two weeks old, and
+ *  the files sent along with messages (uploads/) once they are thirty days old, go. */
 export function tidyStore(now = Date.now()): { back: number; gone: number } {
   const done = { back: 0, gone: 0 };
   const stale = 10 * 60_000;
@@ -149,6 +186,11 @@ export function tidyStore(now = Date.now()): { back: number; gone: number } {
   }
   for (const name of list(join(home(), "pieces"))) if (name.endsWith(".txt") && age(join(home(), "pieces", name)) > 14 * 24 * 3600_000) drop(join(home(), "pieces", name));
   if (age(join(home(), ".basket.part")) > stale) drop(join(home(), ".basket.part"));
+  for (const name of list(join(home(), "uploads"))) {
+    const dir = join(home(), "uploads", name);
+    if (age(dir) < 30 * 24 * 3600_000) continue;
+    try { rmSync(dir, { recursive: true, force: true }); done.gone += 1; } catch { /* not ours to clear */ }
+  }
   return done;
 }
 

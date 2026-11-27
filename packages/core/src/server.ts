@@ -10,14 +10,14 @@ import { basename, extname, join, normalize } from "node:path";
 import { HOME } from "./home.ts";
 import { makeBundle, maskBundle, type Spot } from "./bundle.ts";
 import { freshPlan } from "./fresh.ts";
-import { pieceBlock, withBlocks } from "./links.ts";
+import { filesNote, pieceBlock, withBlocks } from "./links.ts";
 import type { Client, Place, Project, Session, Transfer } from "./model.ts";
 import { findIn, talkOf } from "./read.ts";
 import { buildSnapshot, findProjects, nearestProject, readCodexProjects, type Built } from "./snapshot.ts";
 import { standalonePage } from "./standalone.ts";
-import { appendTransfers, dropPending, queuePieces, readBasket, takePending, tidyStore, writeBasket, type Pending } from "./store.ts";
+import { appendTransfers, dropPending, queuePieces, readBasket, saveUploads, takePending, tidyStore, writeBasket, type Pending } from "./store.ts";
 import { tracePiece } from "./trace.ts";
-import { startNew, startTurn, type Turn } from "./talk.ts";
+import { listModels, startNew, startTurn, type Along, type Turn } from "./talk.ts";
 import { oneLine } from "./util.ts";
 import { grown, Interest, watchRecords, type Changed } from "./watch.ts";
 
@@ -27,13 +27,27 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
   let text = "";
   for await (const chunk of request) {
     text += String(chunk);
-    if (text.length > 2_000_000) throw new Error("너무 깁니다");
+    if (text.length > 16_000_000) throw new Error("너무 깁니다"); // room for the files that may go with a message
   }
   const parsed = JSON.parse(text || "{}");
   return parsed && typeof parsed === "object" ? parsed : {};
 }
 
 type Cut = { transfer: Transfer; block: { id: string; from: string; kind: string; text: string } };
+
+/** What a message from the screen brings besides its words and its pieces: the files (kept here, to be handed to the
+ *  client or read by the agent) and the model asked for. note: what the agent is told of the files that are not
+ *  pictures, put after the words. Throws with the reason when the files are more or larger than is taken. */
+function alongOf(asked: Record<string, unknown>): { along: Along; note: string } {
+  const { dir, saved } = saveUploads(asked.files);
+  const model = typeof asked.model === "string" && /^[\w.:/@-]{1,100}$/.test(asked.model) ? asked.model : undefined;
+  const others = saved.filter((one) => !one.image);
+  return {
+    along: { images: saved.filter((one) => one.image).map((one) => ({ path: one.path, type: one.type })), dirs: others.length && dir ? [dir] : [], ...(model ? { model } : {}) },
+    note: filesNote(others.map((one) => one.path)),
+  };
+}
+const brings = (asked: Record<string, unknown>) => Array.isArray(asked.files) && asked.files.length > 0;
 
 /** The pieces asked for, cut from the records by where they are, so that what goes is what was said there. Null when
  *  one is not found. to: the receiving session (its id is "" when it is yet to be given one) and what it is.
@@ -176,6 +190,7 @@ export function serve(port: number, webDir: string): Served {
         if (url.pathname === "/api/send") {
           const text = typeof asked.text === "string" ? asked.text.trim() : "";
           const picked = Array.isArray(asked.pieces) ? (asked.pieces as Record<string, unknown>[]) : [];
+          if (!text && brings(asked)) return send(400, { error: "붙인 것과 함께 보낼 말을 적어 주세요" });
           if (!text && !picked.length) return send(400, { error: "보낼 말이 없습니다" });
           // Read the records again first: whether the session is at work somewhere else is only known from them.
           const made = await read(String(asked.project ?? ""));
@@ -187,11 +202,17 @@ export function serve(port: number, webDir: string): Served {
           for (const [id, turn] of turns) if (turn.done && now - turn.endedAt > 600_000) turns.delete(id);
           const pieces = await cut(read, made!, picked, { sessionId: session.id, where: placeOf(made!, session) }, now);
           if (!pieces) return send(400, { error: "붙인 조각을 기록에서 찾지 못했습니다. 기록을 다시 읽은 뒤 담아 주세요" });
+          let more: ReturnType<typeof alongOf>;
+          try {
+            more = alongOf(asked);
+          } catch (error) {
+            return send(400, { error: String(error instanceof Error ? error.message : error) });
+          }
           // What was set to wait for this session goes with this message too. It is taken here, before the client is
           // started, so that the client's own hook finds nothing to add to the same message.
           const waited = takePending(session.id);
           const transfers = [...waited.rows.map(({ block: _, ...row }) => row as Transfer), ...pieces.map((piece) => piece.transfer)];
-          const turn = startTurn(session, withBlocks(text, [...waited.rows.map((row) => row.block), ...pieces.map((piece) => pieceBlock(piece.block))]));
+          const turn = startTurn(session, withBlocks(text + more.note, [...waited.rows.map((row) => row.block), ...pieces.map((piece) => pieceBlock(piece.block))]), more.along);
           turns.set(turn.id, turn);
           follow(turn);
           // The pieces are written down once the session has taken the message: when it begins to answer, or ends well.
@@ -230,7 +251,13 @@ export function serve(port: number, webDir: string): Served {
           const into = nearestProject(cwd, made.snapshot.projects ?? [made.snapshot.project]);
           const pieces = await cut(read, made, picked, { sessionId: "", where: placeOf(made, { projectId: null, title: oneLine(text, 80), client }, into) }, now);
           if (!pieces) return send(400, { error: "붙인 조각을 기록에서 찾지 못했습니다. 기록을 다시 읽은 뒤 담아 주세요" });
-          const { turn, ready } = startNew({ client, cwd, like }, withBlocks(text, pieces.map((piece) => pieceBlock(piece.block))));
+          let more: ReturnType<typeof alongOf>;
+          try {
+            more = alongOf(asked);
+          } catch (error) {
+            return send(400, { error: String(error instanceof Error ? error.message : error) });
+          }
+          const { turn, ready } = startNew({ client, cwd, like }, withBlocks(text + more.note, pieces.map((piece) => pieceBlock(piece.block))), more.along);
           turns.set(turn.id, turn);
           follow(turn);
           let kept = false;
@@ -281,6 +308,11 @@ export function serve(port: number, webDir: string): Served {
       }
       if (request.method !== "GET") return send(405, { error: "받지 않는 요청입니다" });
       if (url.pathname === "/api/basket") return send(200, { pieces: readBasket() });
+      if (url.pathname === "/api/models") {
+        // What a client offers to answer with, for the box in which the model of a session's next message is chosen.
+        const client = url.searchParams.get("client");
+        return send(200, { models: client === "codex" || client === "claude" ? await listModels(client) : [] });
+      }
       if (url.pathname === "/api/projects") {
         const { projects } = readCodexProjects();
         return send(200, { projects });

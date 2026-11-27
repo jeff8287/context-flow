@@ -8,10 +8,11 @@
 // Ask it to "고쳐" (fix, edit) something and it asks leave to add a line to NOTES.md in the session's folder.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import { filesIn, withoutPieces } from "../packages/core/src/links.ts";
 import { CLAUDE, CODEX, FLOW, MODEL, PROJECTS, ROOT, SESSIONS, THREADS, iso, line, rolloutPath, transcriptPath, useDemoHomes } from "./world.ts";
 
 useDemoHomes();
@@ -20,11 +21,14 @@ const PIECE = /<context-piece id="([^"]+)" from="([^"]*)" kind="([^"]*)">\n([\s\
 const short = (text: string, room: number) => { const flat = text.replace(/\s+/g, " ").trim(); return flat.length > room ? flat.slice(0, room - 1) + "…" : flat; };
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** What was typed, without the pieces that came along. */
-function typedOf(prompt: string): string {
-  const at = prompt.indexOf("<context-piece");
-  return (at === -1 ? prompt : prompt.slice(0, at)).replace(NOTE, "").trim();
-}
+const size = (bytes: number) => (bytes < 1024 ? bytes + "바이트" : (bytes / 1024).toFixed(1) + "KB");
+
+/** What was typed, without the pieces that came along and without the list of the files that were sent with it. */
+const typedOf = (prompt: string) => withoutPieces(prompt).trim();
+/** The files the request says were sent with it: the agent is told where they lie, and looks whether it can read them. */
+const filesOf = (prompt: string) => filesIn(prompt).map((path) => basename(path) + " (" + (existsSync(path) ? size(statSync(path).size) + ", 읽을 수 있습니다" : "읽을 수 없습니다") + ")");
+/** What came with a request besides words and pieces: pictures (each said by its kind and size) and the model asked for. */
+interface Extra { pictures: string[]; model?: string }
 const wantsEdit = (prompt: string) => /고쳐|수정|적어|edit/i.test(typedOf(prompt));
 
 /** What the client's hook gives for this prompt: the pieces set to wait for the session, handed over the way the
@@ -42,7 +46,7 @@ function hooked(session: string, prompt: string, cwd: string, record: string): s
 }
 
 /** The answer: the request and the pieces, said back. */
-function answer(prompt: string, added: string, edited: "done" | "refused" | null): string {
+function answer(prompt: string, added: string, edited: "done" | "refused" | null, extra: Extra = { pictures: [] }): string {
   const pieces = [...(prompt + "\n" + added).matchAll(PIECE)].map((found) => ({ from: found[2], kind: found[3], text: found[4] }));
   const typed = typedOf(prompt);
   const out = ["(데모 에이전트의 답입니다. 실제 모델은 돌지 않고, 받은 것을 그대로 되짚어 말합니다.)", ""];
@@ -51,6 +55,10 @@ function answer(prompt: string, added: string, edited: "done" | "refused" | null
     out.push("함께 받은 조각 " + pieces.length + "개:");
     pieces.forEach((piece, n) => out.push(n + 1 + ". " + piece.from + "의 " + piece.kind + "에서: “" + short(piece.text, 70) + "”"));
   } else out.push("함께 받은 조각은 없습니다.");
+  if (extra.pictures.length) out.push("", "함께 받은 그림 " + extra.pictures.length + "개: " + extra.pictures.join(", "));
+  const files = filesOf(prompt);
+  if (files.length) out.push("", "함께 받은 파일 " + files.length + "개: " + files.join(", "));
+  if (extra.model) out.push("", "이번 답의 모델: " + extra.model);
   if (edited === "done") out.push("", "NOTES.md에 한 줄을 적었습니다.");
   if (edited === "refused") out.push("", "허락을 받지 못해 NOTES.md는 고치지 않았습니다.");
   return out.join("\n");
@@ -74,12 +82,12 @@ function claudeRecord(session: string, cwd: string, rows: Record<string, unknown
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, rows.map((row) => line({ cwd, sessionId: session, timestamp: iso(Date.now()), uuid: randomUUID(), ...row })).join(""));
 }
-const claudeAsked = (prompt: string, added: string) => [{ type: "user", message: { role: "user", content: prompt } },
+const claudeAsked = (prompt: string, added: string, pictures: unknown[] = []) => [{ type: "user", message: { role: "user", content: pictures.length ? [...pictures, { type: "text", text: prompt }] : prompt } },
   ...(added ? [{ type: "attachment", attachment: { type: "hook_additional_context", hookEvent: "UserPromptSubmit", content: [added] } }] : [])];
 const claudeChanged = (change: { path: string; after: string; added: string }) => [
   { type: "assistant", message: { role: "assistant", model: MODEL.claude, stop_reason: "tool_use", content: [{ type: "tool_use", id: "tool-edit", name: "Edit", input: { file_path: change.path } }] } },
   { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-edit", content: "ok" }] }, toolUseResult: { filePath: change.path, structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: [" " + change.after, "+" + change.added] }] } }];
-const claudeAnswered = (text: string) => [{ type: "assistant", message: { role: "assistant", model: MODEL.claude, stop_reason: "end_turn", content: [{ type: "text", text }] } }];
+const claudeAnswered = (text: string, model = MODEL.claude) => [{ type: "assistant", message: { role: "assistant", model, stop_reason: "end_turn", content: [{ type: "text", text }] } }];
 
 function threads(): DatabaseSync {
   const db = new DatabaseSync(join(CODEX, "state_5.sqlite"));
@@ -93,9 +101,9 @@ function codexRecord(thread: string, turn: string, rows: Record<string, unknown>
   db.prepare("update threads set updated_at_ms = ? where id = ?").run(now, thread);
   db.close();
 }
-const codexAsked = (turn: string, prompt: string, added: string) => [
+const codexAsked = (turn: string, prompt: string, added: string, pictures: unknown[] = []) => [
   { type: "event_msg", payload: { type: "task_started", turn_id: turn } },
-  { type: "UserMessage", content: [{ type: "text", text: prompt }] },
+  { type: "UserMessage", content: [{ type: "text", text: prompt }, ...pictures] },
   // what a hook put with the prompt is a message of its own, beside it
   ...(added ? [{ type: "response_item", payload: { type: "message", id: "hook-" + turn, role: "developer", content: [{ type: "input_text", text: added }], internal_chat_message_metadata_passthrough: { turn_id: turn, content_item_kinds: ["hooks.additional_context"] } } }] : [])];
 const codexChanged = (change: { path: string; after: string; added: string }) => [{ type: "FileChange", status: "completed", changes: { [change.path]: { type: "update", unified_diff: "@@ -1,1 +1,2 @@\n " + change.after + "\n+" + change.added } } }];
@@ -126,11 +134,15 @@ function asClaude(args: string[]): void {
     }
     if (message.type !== "user" || begun) return;
     begun = true;
-    const prompt = String(message.message?.content?.[0]?.text ?? "");
+    const blocks: any[] = Array.isArray(message.message?.content) ? message.message.content : [];
+    const prompt = String(blocks.find((block) => block?.type === "text")?.text ?? "");
+    const pictures = blocks.filter((block) => block?.type === "image");
+    const model = flag("--model");
+    const extra: Extra = { pictures: pictures.map((block) => String(block.source?.media_type) + " " + size(Buffer.from(String(block.source?.data ?? ""), "base64").length)), ...(model && model !== MODEL.claude ? { model } : {}) };
     const record = transcriptPath(cwd, session);
     if (!fresh && !existsSync(record)) return out({ type: "result", is_error: true, result: "No conversation found with session ID: " + session });
     const added = hooked(session, prompt, cwd, record);
-    claudeRecord(session, cwd, claudeAsked(prompt, added));
+    claudeRecord(session, cwd, claudeAsked(prompt, added, pictures));
     let edited: "done" | "refused" | null = null;
     if (wantsEdit(prompt)) {
       const change = edit(cwd, prompt);
@@ -147,13 +159,13 @@ function asClaude(args: string[]): void {
       }
       edited = allow ? "done" : "refused";
     }
-    const text = answer(prompt, added, edited);
+    const text = answer(prompt, added, edited, extra);
     out({ type: "stream_event", event: { type: "content_block_start", content_block: { type: "text" } } });
     for (let at = 0; at < text.length; at += 14) {
       out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: text.slice(at, at + 14) } } });
       await pause(12);
     }
-    claudeRecord(session, cwd, claudeAnswered(text));
+    claudeRecord(session, cwd, claudeAnswered(text, model ?? MODEL.claude));
     out({ type: "result", is_error: false });
   });
 }
@@ -165,15 +177,21 @@ function asCodex(): void {
   const waiting = new Map<number, (allow: boolean) => void>();
   let serial = 100;
   let thread: { id: string; cwd: string } | null = null;
-  const turn = async (id: number, prompt: string) => {
+  const turn = async (id: number, prompt: string, pictures: { type: string; path: string }[], model: string | undefined) => {
     if (!thread) return out({ id, error: { message: "no thread" } });
+    const kinds: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+    const extra: Extra = { pictures: pictures.map((one) => (kinds[one.path.split(".").pop()?.toLowerCase() ?? ""] ?? "image") + " " + (existsSync(one.path) ? size(statSync(one.path).size) : "(읽을 수 없음)")), ...(model ? { model } : {}) };
     const turnId = "turn-" + Date.now().toString(36);
     out({ id, result: { turn: { id: turnId } } });
     const db = threads();
     db.prepare("update threads set first_user_message = ?, title = ? where id = ? and first_user_message = ''").run(typedOf(prompt), short(typedOf(prompt) || "(조각만 보냄)", 80), thread.id);
+    // a model asked for with a turn is the thread's from then on, as with the real client
+    if (model) db.prepare("update threads set model = ? where id = ?").run(model, thread.id);
     db.close();
+    if (model) appendFileSync(rolloutPath(thread.id), line({ timestamp: iso(Date.now()), type: "turn_context", payload: { cwd: thread.cwd, model, approval_policy: "on-request", sandbox_policy: { type: "workspace-write" } } }));
     const added = hooked(thread.id, prompt, thread.cwd, rolloutPath(thread.id));
-    codexRecord(thread.id, turnId, codexAsked(turnId, prompt, added));
+    // the record names a picture the way the real client's record does
+    codexRecord(thread.id, turnId, codexAsked(turnId, prompt, added, pictures.map((one) => ({ type: "local_image", path: one.path }))));
     let edited: "done" | "refused" | null = null;
     if (wantsEdit(prompt)) {
       const change = edit(thread.cwd, prompt);
@@ -190,7 +208,7 @@ function asCodex(): void {
       }
       edited = allow ? "done" : "refused";
     }
-    const text = answer(prompt, added, edited);
+    const text = answer(prompt, added, edited, extra);
     out({ method: "item/started", params: { item: { type: "agentMessage" } } });
     for (let at = 0; at < text.length; at += 14) {
       out({ method: "item/agentMessage/delta", params: { delta: text.slice(at, at + 14) } });
@@ -211,6 +229,7 @@ function asCodex(): void {
       waiting.get(message.id)!(message.result?.decision === "accept");
       waiting.delete(message.id);
     } else if (message.method === "initialize") out({ id: message.id, result: {} });
+    else if (message.method === "model/list") out({ id: message.id, result: { data: [{ model: MODEL.codex, displayName: "Demo Codex 1", hidden: false }, { model: "demo-codex-mini", displayName: "Demo Codex mini", hidden: false }, { model: "demo-codex-old", displayName: "Demo Codex (hidden)", hidden: true }], nextCursor: null } });
     else if (message.method === "thread/start") {
       const id = "0de0" + randomUUID().slice(4);
       const cwd = String(params.cwd ?? process.cwd());
@@ -231,7 +250,10 @@ function asCodex(): void {
       if (!row) return out({ id: message.id, error: { message: "no rollout found for thread id " + params.threadId } });
       thread = { id: row.id, cwd: row.cwd };
       out({ id: message.id, result: { thread: { id: row.id } } });
-    } else if (message.method === "turn/start") void turn(message.id, String(params.input?.[0]?.text ?? ""));
+    } else if (message.method === "turn/start") {
+      const input: any[] = Array.isArray(params.input) ? params.input : [];
+      void turn(message.id, String(input.find((one) => one?.type === "text")?.text ?? ""), input.filter((one) => one?.type === "localImage" && typeof one.path === "string"), typeof params.model === "string" ? params.model : undefined);
+    }
     else if (message.method === "turn/interrupt") out({ method: "turn/completed", params: { turn: { status: "interrupted" } } });
   });
 }

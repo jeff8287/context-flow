@@ -55,6 +55,8 @@ export interface Item {
   final?: boolean;
   /** For a prompt: what a hook put with it. It reached the agent along with the prompt, but nobody typed it there. */
   added?: string;
+  /** For a prompt: how many pictures came with it. They are not text, so no piece can be cut from them. */
+  images?: number;
 }
 
 /** An item without its text, for drawing. */
