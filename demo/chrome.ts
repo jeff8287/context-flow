@@ -53,14 +53,24 @@ export interface Page {
 export async function launch(chrome: string, size: { width: number; height: number }): Promise<{ page: Page; close(): Promise<void> }> {
   const dir = mkdtempSync(join(tmpdir(), "context-flow-chrome-"));
   // port 0: Chrome takes a free one, and says which in a file in its folder
-  const child = spawn(chrome, ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run", "--no-default-browser-check", "--window-size=" + size.width + "," + size.height, "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
+  const flags = ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run", "--no-default-browser-check", "--window-size=" + size.width + "," + size.height, "--hide-scrollbars"];
+  // Chrome will not run as root with its sandbox, and root is what a container runs as; a container's /dev/shm is too
+  // small for Chrome as well
+  if (process.getuid?.() === 0) flags.push("--no-sandbox");
+  if (process.platform === "linux") flags.push("--disable-dev-shm-usage");
+  const child = spawn(chrome, [...flags, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  // what Chrome says of itself, kept to tell why it did not start
+  let said = "";
+  child.stderr.on("data", (chunk) => { said = (said + chunk).slice(-4000); });
+  let ended = false;
+  child.on("exit", () => { ended = true; });
   const quit = async () => {
     child.kill();
     await sleep(400);
     rmSync(dir, { recursive: true, force: true });
   };
   let address = "";
-  for (let tries = 0; tries < 100 && !address; tries += 1) {
+  for (let tries = 0; tries < 100 && !address && !ended; tries += 1) {
     await sleep(150);
     try {
       const port = Number(readFileSync(join(dir, "DevToolsActivePort"), "utf8").split("\n")[0]);
@@ -70,7 +80,8 @@ export async function launch(chrome: string, size: { width: number; height: numb
   }
   if (!address) {
     await quit();
-    throw new Error("the browser did not start: " + chrome);
+    const last = said.trim().split("\n").filter(Boolean).slice(-3).join("\n");
+    throw new Error("the browser did not start: " + chrome + (last ? "\n" + last : ""));
   }
   const socket = new WebSocket(address);
   await new Promise<void>((resolve, reject) => {

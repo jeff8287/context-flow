@@ -39,7 +39,15 @@ if (unfitWhy) quit(unfitWhy);
 await stage();
 const served = serve(0, dist);
 const at = "http://127.0.0.1:" + (await served.ready);
-const { page, close } = await launch(chrome, SIZE);
+let browser: Awaited<ReturnType<typeof launch>>;
+try {
+  browser = await launch(chrome, SIZE);
+} catch (error) {
+  await served.close();
+  rmSync(home, { recursive: true, force: true });
+  quit("Chrome을 띄우지 못했습니다. " + (error as Error).message);
+}
+const { page, close } = browser;
 
 // ---------- what is on the page ----------
 
