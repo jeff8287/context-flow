@@ -774,8 +774,10 @@ interface Picked { file: File; url: string | null }
 let picked: Picked[] = [];
 /** The model chosen for the open session's next message; "" is the session's own. */
 let wantModel = "";
-/** What each client offers to answer with, as the server found out: asked for once a client. */
+/** What each client offers to answer with, as the server found out: asked for once a client, and again a while later
+ *  while the answer was none (Codex is slow to say the first time it is started, and the server does not wait long). */
 const offered = new Map<Client, { id: string; name: string }[]>();
+const offeredAt = new Map<Client, number>();
 const PICTURE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const ROOM = 10 * 1024 * 1024;
 const MOST = 8;
@@ -952,8 +954,9 @@ function drawModels(session: Session) {
   const foot = pane().querySelector<HTMLElement>(".composer .composer-foot");
   const select = foot?.querySelector<HTMLSelectElement>("select");
   if (!foot || !select) return;
-  if (!offered.has(session.client)) {
-    offered.set(session.client, []);
+  if (!offered.has(session.client) || (!offered.get(session.client)!.length && Date.now() - (offeredAt.get(session.client) ?? 0) > 30_000)) {
+    if (!offered.has(session.client)) offered.set(session.client, []);
+    offeredAt.set(session.client, Date.now());
     void call<{ models: { id: string; name: string }[] }>("/api/models?client=" + session.client).then(({ models }) => {
       offered.set(session.client, models);
       const open = state.open ? state.sessions.get(state.open) : undefined;

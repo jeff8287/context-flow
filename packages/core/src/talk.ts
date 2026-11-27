@@ -394,14 +394,26 @@ let codexModels: { at: number; list: ModelChoice[] } | null = null;
 
 /** The models a client offers, as far as it will say. Codex is asked (its app server lists them); Claude Code takes
  *  the short names of its newest models. What the sessions themselves were seen to run on is added by the screen.
- *  Never fails: a client that does not answer offers nothing. */
-export async function listModels(client: Client): Promise<ModelChoice[]> {
+ *  Never fails: a client that does not answer offers nothing. wait: how long the asker is kept waiting. Codex is let
+ *  answer for longer than that (it is slow the first time it is started), and what it says then is kept for the next
+ *  asking. */
+export async function listModels(client: Client, wait = 8000): Promise<ModelChoice[]> {
   if (client === "claude") return ["opus", "sonnet", "haiku"].map((id) => ({ id, name: id }));
   if (codexModels && Date.now() - codexModels.at < 10 * 60_000) return codexModels.list;
-  const list = await new Promise<ModelChoice[]>((resolve) => {
+  return new Promise<ModelChoice[]>((resolve) => {
     const child = spawn(codexBin(), ["app-server"], { stdio: ["pipe", "pipe", "ignore"] });
-    const done = (found: ModelChoice[]) => { clearTimeout(late); child.kill(); resolve(found); };
-    const late = setTimeout(() => done([]), 8000);
+    let ended = false;
+    const done = (found: ModelChoice[]) => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(late);
+      clearTimeout(gone);
+      child.kill();
+      if (found.length) codexModels = { at: Date.now(), list: found };
+      resolve(found); // (a promise answered already stays as it was answered)
+    };
+    const late = setTimeout(() => resolve([]), wait);
+    const gone = setTimeout(() => done([]), Math.max(wait, 40_000));
     const send = (message: unknown) => { if (child.stdin.writable) child.stdin.write(JSON.stringify(message) + "\n"); };
     child.on("error", () => done([]));
     child.on("exit", () => done([]));
@@ -422,6 +434,4 @@ export async function listModels(client: Client): Promise<ModelChoice[]> {
       }
     });
   });
-  if (list.length) codexModels = { at: Date.now(), list };
-  return list;
 }
