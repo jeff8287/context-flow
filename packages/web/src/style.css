@@ -136,6 +136,8 @@ button { cursor: pointer; }
 #none ul { display: grid; gap: 3px; margin: 0 0 12px; padding: 0; list-style: none; }
 #none b { color: var(--ink); font-weight: 600; }
 #none code { padding: 1px 5px; border-radius: 5px; background: var(--hover); font: 11.5px var(--mono); }
+#none .none-start { margin: 0 0 14px; height: 34px; padding: 0 14px; border: 0; border-radius: 9px; background: var(--ink); color: var(--surface); font-size: 13px; font-weight: 600; }
+#none .none-start:hover { opacity: .88; }
 .float { position: absolute; z-index: 3; display: flex; align-items: center; gap: 6px; }
 .float.tl { left: 10px; top: 10px; }
 .float.tr { right: 10px; top: 10px; }
@@ -478,6 +480,28 @@ body.moving, body.moving * { cursor: grabbing !important; user-select: none; -we
 .fresh-way select { width: 100%; height: 32px; padding: 0 8px; border: 1px solid var(--edge); border-radius: 9px; background: var(--surface); color: var(--ink); font-size: 12.5px; font-weight: 500; text-overflow: ellipsis; }
 .fresh-way select:focus { outline: none; border-color: var(--edge-strong); }
 .fresh-note { flex: none; margin: 0 2px; color: var(--faint); font-size: 12px; line-height: 1.5; }
+/* choosing the folder of a first session: the folders in one, the git work trees near home, and where it begins */
+.browse { flex: none; display: flex; flex-direction: column; gap: 8px; }
+.browse-bar { display: flex; gap: 6px; }
+.browse-up { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--edge); border-radius: 9px; background: var(--surface); color: var(--muted); }
+.browse-up:hover:not(:disabled) { border-color: var(--edge-strong); background: var(--hover); }
+.browse-up:disabled { opacity: .4; }
+.browse-up svg { width: 16px; height: 16px; }
+.browse-path { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--edge); border-radius: 9px; background: var(--surface); color: var(--ink); font: 12px var(--mono); }
+.browse-path:focus { outline: none; border-color: var(--edge-strong); }
+.browse-error { margin: 0 2px; color: #D0453F; font-size: 12px; }
+.browse-near { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--faint); font-size: 11.5px; font-weight: 600; }
+.browse-near > span { margin: 0 2px; }
+.browse-chip { height: 24px; padding: 0 9px; border: 1px solid var(--edge); border-radius: 12px; background: var(--surface); color: var(--ink); font-size: 12px; font-weight: 500; }
+.browse-chip:hover { border-color: var(--edge-strong); background: var(--hover); }
+.browse-chip.on { border-color: var(--ink); }
+.browse-list { max-height: 248px; overflow: auto; display: flex; flex-direction: column; padding: 4px; border: 1px solid var(--edge); border-radius: 10px; background: var(--surface); }
+.browse-row { flex: none; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 9px; border: 0; border-radius: 7px; background: none; color: var(--ink); font-size: 12.5px; text-align: left; }
+.browse-row:hover { background: var(--hover); }
+.browse-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browse-git { flex: none; padding: 1px 6px; border-radius: 6px; background: var(--hover); color: var(--muted); font: 10.5px var(--mono); }
+.browse-none { margin: 6px 8px; color: var(--faint); font-size: 12px; line-height: 1.5; }
+.browse-here { margin: 0 2px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .fresh-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fresh-pieces { flex: none; }
 .fresh-pieces .ctx-head { margin-top: 8px; }

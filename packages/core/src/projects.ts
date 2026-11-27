@@ -35,7 +35,7 @@ const trees = new Map<string, string>();
 
 /** The git work tree a folder lies in (the nearest folder above it, or itself, that holds a .git), or the folder
  *  itself when it lies in none. A linked work tree is one of its own: it holds a .git file. */
-function workTree(folder: string): string {
+export function workTree(folder: string): string {
   const known = trees.get(folder);
   if (known) return known;
   for (let dir = folder; ;) {
@@ -57,7 +57,8 @@ let kept: { at: number; of: string; list: Project[] } | null = null;
  *  Looked for again every few seconds at most: it is asked for with every reading of the records. */
 export function folderProjects(now = Date.now(), claude = claudeHome(), codex = codexHome()): Project[] {
   const of = claude + "\n" + codex;
-  if (kept && kept.of === of && now >= kept.at && now - kept.at < 5000) return kept.list;
+  // (where nothing was found it is looked for again at once: the first session begun is seen as soon as it is there)
+  if (kept && kept.of === of && kept.list.length && now >= kept.at && now - kept.at < 5000) return kept.list;
   const worked = new Map<string, number>();
   for (const folders of [claudeFolders(claude), threadFolders(codex)]) {
     for (const [folder, at] of folders) {
