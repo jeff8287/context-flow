@@ -165,11 +165,12 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
       if (turn) kept.set(id, { turn });
     }
   }
-  const recorded = recordedLinks(sessions, forkedBefore(sessions, items, kept));
+  const before = forkedBefore(sessions, items, kept);
+  const recorded = recordedLinks(sessions, before);
   if (recorded.outside) notes.push("부모가 " + (many ? "이 프로젝트들" : "이 프로젝트") + " 밖에 있는 세션 " + recorded.outside + "개는 연결 없이 그렸습니다.");
   const here = new Set(sessions.map((session) => session.id));
   const sent = transferLinks(transfers.filter((transfer) => here.has(transfer.from.sessionId) && here.has(transfer.to.sessionId)), items);
-  const pasted = pasteLinks(items, sessions, whole.id);
+  const pasted = pasteLinks(items, sessions, whole.id, before);
   notes.push("점선 화살표(붙여넣기)는 기록에 남은 것이 아니라 글자를 견줘 찾은 것입니다: 요청에 친 글 가운데 80자 이상이, 다른 세션이 그보다 먼저 한 답변이나 변경과 같을 때. 파일에서 직접 복사한 글도 잡힐 수 있습니다.");
   const bodies = new Map(items.map((item) => [item.id, item]));
   return {

@@ -85,8 +85,9 @@ function flatOf(item: Item): string {
 }
 
 /** A link for each stretch of a prompt that was said or changed earlier in another session. What was found for a
- *  prompt is kept: records are only ever added to, so what came before a prompt does not change. */
-export function pasteLinks(items: Item[], sessions: Session[], scope = ""): Link[] {
+ *  prompt is kept: records are only ever added to, so what came before a prompt does not change.
+ *  before: for a fork, the request of its parent that it was made before, where that is known (links.ts). */
+export function pasteLinks(items: Item[], sessions: Session[], scope = "", before: Map<string, string> = new Map()): Link[] {
   let kept = keptIn.get(scope);
   if (!kept) keptIn.set(scope, (kept = new Map()));
   const byId = new Map(sessions.map((session) => [session.id, session]));
@@ -96,12 +97,19 @@ export function pasteLinks(items: Item[], sessions: Session[], scope = ""): Link
     for (let guard = 0; session && (session.origin === "subagent" || session.origin === "side") && session.parentId && guard < 8; guard += 1) session = byId.get(session.parentId) ?? session;
     return session?.id ?? id;
   };
-  // a fork, or a copy, began with everything its parent had said: that is not pasted again
-  const inherits = (id: string): Set<string> => {
-    const out = new Set<string>();
+  // A fork began with what its parent had said up to where it was made: that is not pasted into it again. Where it
+  // was made is the request it was made before, when the records tell (a request said again is forked before that
+  // request, however long afterwards), and never later than when the fork itself began. What the parent said after
+  // that, the fork was not given. For each session a fork has something from: until when what that session said is
+  // the fork's own. (A copy of a session has all of it.)
+  const whenOf = new Map(items.map((item) => [item.id, item.at]));
+  const inherits = (id: string): Map<string, number> => {
+    const out = new Map<string, number>();
     let session = byId.get(id);
     for (let guard = 0; session && (session.origin === "fork" || session.origin === "imported") && session.parentId && guard < 16; guard += 1) {
-      out.add(topOf(session.parentId));
+      const until = session.origin === "imported" ? Infinity : Math.min(whenOf.get(before.get(session.id) ?? "") ?? Infinity, session.startedAt + 1);
+      const from = topOf(session.parentId);
+      out.set(from, Math.max(out.get(from) ?? 0, until));
       session = byId.get(session.parentId);
     }
     return out;
@@ -139,7 +147,8 @@ export function pasteLinks(items: Item[], sessions: Session[], scope = ""): Link
       }
     });
     const found = new Map<number, Map<number, Seg[]>>(); // prompt -> source -> the stretches they share
-    const up = new Map<string, Set<string>>();
+    const had = new Map<number, Set<number>>(); // prompt -> the sources its session was given when it was made
+    const up = new Map<string, Map<string, number>>();
     for (const hit of hits) {
       if (spread.get(hit.window)!.size >= COMMON) continue;
       const source = sources[hit.s];
@@ -156,7 +165,13 @@ export function pasteLinks(items: Item[], sessions: Session[], scope = ""): Link
         if (!fresh.has(prompt.id) || source.at >= prompt.at || from === prompt.sessionId) continue;
         let above = up.get(prompt.sessionId);
         if (!above) up.set(prompt.sessionId, (above = inherits(prompt.sessionId)));
-        if (above.has(from)) continue;
+        // What the session was given is looked at like anything else, so that a stretch it accounts for is not
+        // put down to a session that only said the same later; it is no paste, and is left out at the end.
+        if (source.at < (above.get(from) ?? -Infinity)) {
+          const given = had.get(t);
+          if (given) given.add(hit.s);
+          else had.set(t, new Set([hit.s]));
+        }
         const per = found.get(t) ?? new Map<number, Seg[]>();
         found.set(t, per);
         const segs = per.get(hit.s) ?? [];
@@ -195,9 +210,12 @@ export function pasteLinks(items: Item[], sessions: Session[], scope = ""): Link
         const scored = left.map((one) => ({ ...one, gain: cover(one.segs, taken) })).filter((one) => one.gain >= MIN);
         if (!scored.length) break;
         const most = Math.max(...scored.map((one) => one.gain));
-        const pick = scored.filter((one) => one.gain >= most * 0.9).sort((x, y) => sources[x.s].at - sources[y.s].at)[0];
+        const near = scored.filter((one) => one.gain >= most * 0.9).sort((x, y) => sources[x.s].at - sources[y.s].at);
+        const given = had.get(t);
+        const pick = near.find((one) => given?.has(one.s)) ?? near[0];
         for (const seg of pick.segs) taken.fill(1, seg.q0, seg.q1);
         left = left.filter((one) => one.s !== pick.s);
+        if (given?.has(pick.s)) continue; // the session had this from the start: nothing was carried into it
         const source = sources[pick.s];
         promptFlat ??= flat(typedPart(prompt.text), "prompt");
         const sourceFlat = flat(source.text, source.kind);
