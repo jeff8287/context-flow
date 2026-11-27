@@ -13,7 +13,7 @@ import * as d3 from "d3";
 import type { Session } from "../../core/src/model.ts";
 import { GX, GY, H, W, layout, placeZones, planZones, zoneOrder, type Frame, type Plan, type Spot, type Zone } from "./place.ts";
 import { behind, drawn, field, restsOn, rounded, route, sampled, type Field, type Rect, type Way } from "./route.ts";
-import { act, ago, colorOf, el, flowLabel, h, ICON, many, owner, projectOf, projectsOn, projName, quietFor, state, stateWord, type Flow } from "./state.ts";
+import { act, ago, CLIENT, colorOf, el, flowLabel, h, ICON, many, owner, projectOf, projectsOn, projName, quietFor, state, stateWord, type Flow } from "./state.ts";
 
 /** Where the person put a tile, by session: it overrides the place the layout gives. Kept for each set of projects.
  *  With one project on the map it is a place on the map. With several, a place within the tile's own project's part
@@ -614,22 +614,24 @@ export function drawMap() {
     else if (session.activity === "waiting") status.append(h("span", "", "답 기다림"));
     else status.append(h("span", "", ago(session.updatedAt, now) + " 전"));
     meta.append(status);
+    // The small marks share one pill, and say how many only when there are more than one (the number is in their tip).
+    const marks = h("span", "tile-marks");
     const kids = state.graph.kids.get(session.id)?.length ?? 0;
     if (kids) {
       const chip = h("span", "chipx");
       chip.innerHTML = ICON.branch;
-      chip.append(String(kids));
+      if (kids > 1) chip.append(String(kids));
       chip.title = "이 세션이 부린 서브에이전트와 곁가지 대화 " + kids + "개";
-      meta.append(chip);
+      marks.append(chip);
     }
     const far = (state.snap!.far ?? []).filter((one) => (owner(one.sessionId)?.id ?? one.sessionId) === session.id);
     if (far.length) {
       // pieces that went between this session and sessions of other projects: no line can show them here
       const chip = h("span", "chipx reach");
-      chip.append("⇄ " + far.length);
+      chip.append("⇄" + (far.length > 1 ? " " + far.length : ""));
       chip.title = "다른 프로젝트의 세션과 주고받은 조각 " + far.length + "개 (" + [...new Set(far.map((one) => one.other.projectName))].join(", ") + "). 누르면 봅니다.";
       chip.onclick = (event) => { event.stopPropagation(); act.openEdge(session.id, null); };
-      meta.append(chip);
+      marks.append(chip);
     }
     const off = [...(state.graph.near.get(session.id) ?? [])].filter((id) => !state.on.has(id));
     if (off.length) {
@@ -638,10 +640,16 @@ export function drawMap() {
       chip.append("+" + off.length);
       chip.title = "이어진 세션 " + off.length + "개가 꺼져 있습니다. 누르면 켭니다.";
       chip.onclick = (event) => { event.stopPropagation(); off.forEach((id) => state.on.add(id)); act.render(); };
-      meta.append(chip);
+      marks.append(chip);
     }
+    if (marks.childElementCount) meta.append(marks);
     meta.append(h("span", "tile-counts", "요청 " + session.counts.prompts + (session.counts.changes ? " · 변경 " + session.counts.changes : "")));
-    meta.append(h("span", "tile-client", session.client === "codex" ? "Codex" : "Claude"));
+    // which client: a shape, as at the head of a talk (a circle for Codex, a square for Claude Code)
+    const client = h("i", "tile-client client-mark " + session.client);
+    client.title = CLIENT[session.client];
+    client.setAttribute("role", "img");
+    client.setAttribute("aria-label", CLIENT[session.client]);
+    meta.append(client);
     tile.append(meta);
     if (moving === session.id) tile.classList.add("moving");
     tile.onpointerdown = (event) => grab(event, session.id, spot);

@@ -166,10 +166,17 @@ button { cursor: pointer; }
 .tile-meta { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11px; white-space: nowrap; }
 .tile-status { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
 .tile-status span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.tile-client { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; flex-shrink: 100; } /* where the row runs out of room, the client's name gives way before the state does */
-.chipx { flex: none; display: inline-flex; align-items: center; gap: 2px; height: 17px; padding: 0 5px 0 3px; border-radius: 9px; background: color-mix(in srgb, currentColor 13%, transparent); font-size: 10.5px; font-weight: 600; }
+/* the state is said in full; only at work does it give way, by what is being worked on */
+.tile:not(.running) .tile-status { flex: none; }
+/* the small marks, side by side in one pill */
+.tile-marks { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 17px; padding: 0 5px 0 4px; border-radius: 9px; background: color-mix(in srgb, currentColor 13%, transparent); font-size: 10.5px; font-weight: 600; }
+.chipx { display: inline-flex; align-items: center; gap: 2px; border-radius: 5px; }
 .chipx svg { width: 12px; height: 12px; }
-.chipx.reach:hover { background: color-mix(in srgb, currentColor 28%, transparent); }
+.chipx.reach:hover { background: color-mix(in srgb, currentColor 26%, transparent); }
+/* which client a session is of: a circle for Codex, a square for Claude Code, as at the head of its talk */
+.client-mark { flex: none; display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: currentColor; }
+.client-mark.codex { border-radius: 50%; }
+.tile-client { margin-left: auto; opacity: .75; }
 /* a session waiting for an answer: a wash of its colour, and its name in bold */
 .tile.waiting { border-color: color-mix(in srgb, var(--c) 50%, var(--surface)); background: color-mix(in srgb, var(--c) 7%, var(--surface)); }
 .tile.waiting .tile-title { font-weight: 650; }
@@ -186,9 +193,8 @@ button { cursor: pointer; }
 .bang { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: var(--ink); color: var(--surface); font-style: normal; font-size: 10.5px; font-weight: 800; line-height: 1; }
 .tile .bang { width: calc(14px / var(--k)); height: calc(14px / var(--k)); background: #fff; color: var(--c); font-size: calc(10.5px / var(--k)); }
 .tile.running.needs { animation: none; box-shadow: var(--lift), 0 0 0 3px var(--board), 0 0 0 6px var(--c); }
-/* what it waits for is said in full: the client's name gives way */
+/* what it waits for is said in full */
 .tile.needs .tile-status { flex: none; }
-.tile.needs .tile-client { display: none; }
 .live .bang { background: var(--c); color: #fff; }
 .row-bang { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: var(--ink); color: var(--side); font-size: 10.5px; font-weight: 800; line-height: 1; }
 @keyframes halo { 0% { box-shadow: var(--lift), 0 0 0 0 color-mix(in srgb, var(--c) 60%, transparent); } 100% { box-shadow: var(--lift), 0 0 0 13px color-mix(in srgb, var(--c) 0%, transparent); } }
@@ -506,8 +512,11 @@ body.moving, body.moving * { cursor: grabbing !important; user-select: none; -we
 .tile-meta { gap: calc(6px / var(--k)); font-size: calc(10.5px / var(--k)); }
 .tile-status { gap: calc(5px / var(--k)); }
 .tile .pulse { width: calc(7px / var(--k)); height: calc(7px / var(--k)); }
-.chipx { gap: calc(2px / var(--k)); height: calc(16px / var(--k)); padding: 0 calc(5px / var(--k)) 0 calc(3px / var(--k)); border-radius: calc(9px / var(--k)); font-size: calc(10px / var(--k)); }
+.tile-marks { gap: calc(4px / var(--k)); height: calc(16px / var(--k)); padding: 0 calc(5px / var(--k)) 0 calc(4px / var(--k)); border-radius: calc(9px / var(--k)); font-size: calc(10px / var(--k)); }
+.chipx { gap: calc(2px / var(--k)); border-radius: calc(5px / var(--k)); }
 .chipx svg { width: calc(11px / var(--k)); height: calc(11px / var(--k)); }
+.tile-client { width: calc(8px / var(--k)); height: calc(8px / var(--k)); border-radius: calc(2px / var(--k)); }
+.tile-client.codex { border-radius: 50%; }
 .pill { gap: calc(3px / var(--k)); height: calc(20px / var(--k)); padding: 0 calc(8px / var(--k)); border-width: calc(1.5px / var(--k)); border-radius: calc(10px / var(--k)); font-size: calc(10.5px / var(--k)); }
 .pill.share { padding-left: calc(5px / var(--k)); border-width: calc(1px / var(--k)); }
 .pill svg { width: calc(12px / var(--k)); height: calc(12px / var(--k)); }
