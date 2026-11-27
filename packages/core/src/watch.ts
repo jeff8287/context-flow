@@ -1,7 +1,12 @@
 // Being told when the records change, so that the screen need not ask again and again to find out.
 // The folders the clients write their records to are watched, and this tool's own. Nothing is read here and no client
 // is asked anything. Where a folder cannot be watched, the screen goes on asking at its own pace, as it did before.
-import { existsSync, watch, type FSWatcher } from "node:fs";
+//
+// Watching a folder does not tell of everything. macOS says that a file was written to when the file is closed, and
+// Codex keeps a thread's record open for as long as it has the thread loaded: nothing is heard of such a record
+// while it grows. So the records a screen knows are also looked at, once a second, for whether they have grown
+// (grown, below). The watch still finds what the look cannot: a record that has just been made, a piece set to wait.
+import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import { join, sep } from "node:path";
 import { claudeHome } from "./claude.ts";
 import { codexHome } from "./codex.ts";
@@ -53,6 +58,24 @@ export function watchRecords(heard: (change: Changed) => void): Watch {
       open.clear();
     },
   };
+}
+
+/** Of these records, the ones whose size is not what it was at the last look. seen keeps the sizes between looks; a
+ *  record looked at for the first time is only taken note of. A record that is gone is not said to have changed. */
+export function grown(paths: Iterable<string>, seen: Map<string, number>): string[] {
+  const out: string[] = [];
+  for (const path of paths) {
+    let size: number;
+    try {
+      size = statSync(path).size;
+    } catch {
+      continue;
+    }
+    const before = seen.get(path);
+    seen.set(path, size);
+    if (before !== undefined && before !== size) out.push(path);
+  }
+  return out;
 }
 
 /** Which changes matter to one screen. A screen shows some projects; the clients write the records of every project
