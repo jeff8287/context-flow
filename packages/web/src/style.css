@@ -71,6 +71,17 @@ button { cursor: pointer; }
 .proj-row > .proj-only:first-child { padding-left: 10px; }
 .proj-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
 .proj-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 11px; }
+/* a project this screen put on the list: taken off it again, after one more question in its row */
+.proj-drop { flex: none; width: 28px; height: 28px; margin-right: 4px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--faint); }
+.proj-drop svg { width: 13px; height: 13px; }
+.proj-drop:hover { background: var(--press); color: var(--ink); }
+.proj-row.asking { flex-wrap: wrap; }
+.proj-ask { flex-basis: 100%; display: flex; align-items: center; gap: 6px; padding: 0 8px 7px 32px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.proj-ask span { flex: 1; min-width: 0; }
+.proj-ask.failed span { color: #D0453F; }
+.proj-ask button { flex: none; height: 24px; padding: 0 9px; border: 1px solid var(--edge); border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 12px; font-weight: 600; }
+.proj-ask button:hover { border-color: var(--edge-strong); }
+.proj-ask .proj-yes { border-color: #D0453F; color: #D0453F; }
 /* covering names in what is exported */
 #mask-row { display: flex; align-items: center; gap: 7px; margin-top: 4px; padding: 7px 8px 5px; border-top: 1px solid var(--edge); color: var(--muted); font-size: 12.5px; cursor: pointer; }
 #mask-row input { margin: 0; accent-color: var(--ink); }

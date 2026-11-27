@@ -11,6 +11,9 @@ export interface Project {
   /** Folders under its own that are other projects': a session that works there is not this project's. Only a
    *  project found from the folders the sessions worked in has these (projects.ts); the screen is not told of them. */
   not?: string[];
+  /** It is on the list only because a session was begun in its folder from the screen while that lay in no project
+   *  (store.ts keeps the folder): the screen may take it off the list again. */
+  kept?: boolean;
 }
 
 /** How a session came to be. */

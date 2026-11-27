@@ -52,7 +52,18 @@ export function readFolders(): KeptFolder[] {
 
 /** Keep a folder as a project of its own: kept again, it is the one begun in last. */
 export function keepFolder(root: string, at = Date.now()): void {
-  const kept = [{ root, at }, ...readFolders().filter((one) => one.root !== root)];
+  writeFolders([{ root, at }, ...readFolders().filter((one) => one.root !== root)]);
+}
+
+/** Let go of the folders kept that match (their projects go off the list), and say how many there were. */
+export function dropFolders(match: (root: string) => boolean): number {
+  const before = readFolders();
+  const kept = before.filter((one) => !match(one.root));
+  if (kept.length !== before.length) writeFolders(kept);
+  return before.length - kept.length;
+}
+
+function writeFolders(kept: KeptFolder[]): void {
   mkdirSync(home(), { recursive: true });
   const part = join(home(), ".folders.part"); // written whole or not at all
   writeFileSync(part, JSON.stringify(kept, null, 1) + "\n");

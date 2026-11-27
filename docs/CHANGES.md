@@ -27,6 +27,7 @@ npm run service -- restart   # 서비스로 띄워 두었을 때. 아니면 npm 
 | 읽을 세션이 하나도 없으면 빈 화면 대신 기록을 어디서 찾아봤는지와 할 일을 보여 주고, 첫 세션이 생기면 저절로 이어집니다. 새 세션 창은 이 컴퓨터에 없는 클라이언트를 '찾지 못함'으로 보입니다 | 지도 자리, 새 세션 창 | [USAGE.md](USAGE.md) 1절, 8절 | [#40](https://github.com/jeff8287/context-flow/pull/40) |
 | 세션이 하나도 없을 때 화면에서 폴더를 골라 첫 세션을 시작합니다. 홈 폴더부터 폴더를 따라 내려가거나 경로를 적고, 홈 근처의 git 저장소는 바로 고릅니다 | 안내 카드의 '폴더를 골라 첫 세션 시작', 새 세션 | [USAGE.md](USAGE.md) 1절 | [#44](https://github.com/jeff8287/context-flow/pull/44) |
 | 프로젝트가 있을 때도 새 세션 창의 '다른 폴더…'로 프로젝트 밖의 폴더(방금 만든 저장소 같은)에서 바로 시작합니다. 어느 프로젝트에도 없는 폴더는 새 프로젝트가 되어 지도에 함께 올라가고, 그 뒤로 프로젝트 목록에 남습니다 | 새 세션 창의 '폴더' | [USAGE.md](USAGE.md) 1절 | [#46](https://github.com/jeff8287/context-flow/pull/46) |
+| 이렇게 더한 프로젝트를 목록에서 뺍니다. 한 번 더 묻고, 지도에서도 내립니다. 세션의 기록은 그대로입니다 | 프로젝트 목록의 × | [USAGE.md](USAGE.md) 1절 | [#48](https://github.com/jeff8287/context-flow/pull/48) |
 | 요청을 고치거나 대화를 되감기 전에 오간 말을, 대화가 갈린 자리에서 펼쳐 봅니다. 거기서도 조각을 담아 다른 세션이나 그 세션 자신에게 보냅니다 | 대화의 점선 줄 '고치기 전의 대화', '되감기 전의 대화' | [DEMO.md](DEMO.md) 10절 | [#26](https://github.com/jeff8287/context-flow/pull/26), [#32](https://github.com/jeff8287/context-flow/pull/32) |
 
 ## 기록을 읽는 법이 바뀐 것

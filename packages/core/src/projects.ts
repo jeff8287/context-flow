@@ -12,7 +12,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { claudeFolders, claudeHome } from "./claude.ts";
 import { codexHome, readCodexProjects, threadFolders } from "./codex.ts";
 import type { Project } from "./model.ts";
-import { readFolders, type KeptFolder } from "./store.ts";
+import { dropFolders, readFolders, type KeptFolder } from "./store.ts";
 import { under, within } from "./util.ts";
 
 export interface Projects {
@@ -34,7 +34,7 @@ export function readProjects(now = Date.now()): Projects {
   return { projects: folderProjects(now, claudeHome(), codexHome(), kept), assigned: new Map(), from: "folders" };
 }
 
-const dirProject = (root: string, not: string[] = []): Project => ({ id: "dir-" + createHash("sha1").update(root).digest("hex").slice(0, 12), name: basename(root) || root, roots: [root], ...(not.length ? { not } : {}) });
+const dirProject = (root: string, not: string[] = [], kept = false): Project => ({ id: "dir-" + createHash("sha1").update(root).digest("hex").slice(0, 12), name: basename(root) || root, roots: [root], ...(not.length ? { not } : {}), ...(kept ? { kept } : {}) });
 
 /** The sidebar's projects, and after them the folders kept from the screen, the one begun in last first. A kept folder
  *  that is in a sidebar project now (it was put in the sidebar since) is that project's; one that holds a project's
@@ -43,7 +43,7 @@ function besideSidebar(projects: Project[], kept: KeptFolder[]): Project[] {
   const roots = projects.flatMap((project) => project.roots);
   const own = kept.filter((one) => !roots.some((root) => under(one.root, root))).sort((one, other) => other.at - one.at);
   const all = [...roots, ...own.map((one) => one.root)];
-  return [...projects, ...own.map((one) => dirProject(one.root, all.filter((other) => other !== one.root && under(other, one.root))))];
+  return [...projects, ...own.map((one) => dirProject(one.root, all.filter((other) => other !== one.root && under(other, one.root)), true))];
 }
 
 /** The project a session begun in a folder will be of. Of the projects there are, the one the folder lies in (the
@@ -105,13 +105,14 @@ export function folderProjects(now = Date.now(), claude = claudeHome(), codex = 
       worked.set(root, Math.max(worked.get(root) ?? 0, at));
     }
   }
+  const recorded = new Set(worked.keys()); // (a folder kept that a session worked in is on the list for that alone)
   for (const one of kept) {
     const root = workTree(one.root);
     worked.set(root, Math.max(worked.get(root) ?? 0, one.at));
   }
   const roots = [...worked.keys()];
   const list = [...worked].sort((one, other) => other[1] - one[1] || (one[0] < other[0] ? -1 : 1)).map(([root]): Project => {
-    return dirProject(root, roots.filter((other) => other !== root && under(other, root)));
+    return dirProject(root, roots.filter((other) => other !== root && under(other, root)), !recorded.has(root));
   });
   found = { at: now, of, list };
   return list;
@@ -129,7 +130,16 @@ export function forgetProjects(): void {
   trees.clear();
 }
 
-/** A project as the screen is told of it: its name and its folders. */
+/** A project as the screen is told of it: its name and its folders, and whether the screen put it on the list. */
 export function shown(project: Project): Project {
-  return { id: project.id, name: project.name, roots: project.roots };
+  return { id: project.id, name: project.name, roots: project.roots, ...(project.kept ? { kept: true } : {}) };
+}
+
+/** Take a project the screen put on the list off it again: the folders kept that are it are let go. No record is
+ *  touched, and a session begun there from the screen again keeps it again. False: none was kept. */
+export function forgetKept(project: Project): boolean {
+  const root = project.roots[0];
+  const dropped = dropFolders((one) => one === root || workTree(one) === root);
+  lookAgain();
+  return dropped > 0;
 }
