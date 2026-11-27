@@ -129,6 +129,13 @@ button { cursor: pointer; }
 #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 #links { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
 #empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--faint); text-align: center; pointer-events: none; }
+#none { position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100% - 48px)); padding: 22px 24px 12px; border: 1px solid var(--edge); border-radius: 14px; background: var(--surface); color: var(--muted); font-size: 13px; line-height: 1.6; box-shadow: var(--lift); }
+#none h2 { margin: 0 0 8px; color: var(--ink); font-size: 16px; }
+#none p { margin: 0 0 12px; }
+#none .none-head { margin: 0 0 4px; color: var(--faint); font-size: 11.5px; }
+#none ul { display: grid; gap: 3px; margin: 0 0 12px; padding: 0; list-style: none; }
+#none b { color: var(--ink); font-weight: 600; }
+#none code { padding: 1px 5px; border-radius: 5px; background: var(--hover); font: 11.5px var(--mono); }
 .float { position: absolute; z-index: 3; display: flex; align-items: center; gap: 6px; }
 .float.tl { left: 10px; top: 10px; }
 .float.tr { right: 10px; top: 10px; }
@@ -456,6 +463,9 @@ body.moving, body.moving * { cursor: grabbing !important; user-select: none; -we
 .client:hover { border-color: var(--edge-strong); }
 .client.on { border-color: var(--ink); color: var(--ink); }
 .client.on .sw { border-color: var(--ink); background: var(--ink); }
+.client:disabled { border-style: dashed; color: var(--faint); cursor: not-allowed; }
+.client:disabled:hover { border-color: var(--edge); }
+.client-off { margin-left: auto; font-size: 11.5px; font-weight: 500; }
 .fresh-ways { flex: none; display: flex; gap: 8px; }
 .fresh-way { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--faint); font-size: 11.5px; font-weight: 600; }
 .fresh-way span { padding-left: 2px; }

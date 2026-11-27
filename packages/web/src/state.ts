@@ -52,6 +52,8 @@ export const state = {
   snap: null as Snapshot | null,
   /** Every project there is to choose from, whether or not it is on the map. */
   projects: [] as Project[],
+  /** Which clients the server can start: one that is not on this computer is not offered for a new session. */
+  clients: { codex: true, claude: true } as Record<Client, boolean>,
   sessions: new Map<string, Session>(),
   graph: { flows: [], shares: [], kids: new Map(), near: new Map() } as Graph,
   /** The sessions switched on in the sidebar: the ones the map shows. */

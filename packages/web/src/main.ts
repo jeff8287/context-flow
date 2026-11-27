@@ -1,7 +1,7 @@
 // The screen, laid out like a chat app: sessions in a sidebar, switched on and off there; the ones that are on drawn
 // on a map with what ties them; a session's talk opened from the map.
 import { readBundle, type Bundle } from "../../core/src/bundle.ts";
-import type { ItemKind, Piece, Project, Session, Snapshot, TraceStep } from "../../core/src/model.ts";
+import type { Client, ItemKind, Piece, Project, Session, Snapshot, TraceStep } from "../../core/src/model.ts";
 import { closeChat, drawChat, drawEdge, drawNew, drawTrace } from "./chat.ts";
 import { drawLanes } from "./lanes.ts";
 import { drawMap, fitMap, focusMap, spotsOf, stepZoom, tidyMap } from "./map.ts";
@@ -287,6 +287,37 @@ const address = () => {
 };
 /** Whether the projects on offer are the Codex app's sidebar projects, or were found from the folders the sessions worked in. */
 let foundFrom: "sidebar" | "folders" = "sidebar";
+
+/** Where the server looked for a client's records, when it found no session there. */
+interface Looked { client: Client; path: string; there: boolean }
+
+/** With no session read anywhere, the map says so: where the records were looked for, and what to do. null: there
+ *  are sessions, and the map is itself. */
+function showNone(looked: Looked[] | null) {
+  el<HTMLElement>("none").hidden = looked === null;
+  el<HTMLElement>("legend").hidden = looked !== null; // no lines to read the marks of
+  for (const id of ["new-session", "new-float"]) el<HTMLButtonElement>(id).disabled = looked !== null; // a new session begins in a project's folder
+  if (looked === null) return;
+  const button = el<HTMLButtonElement>("project");
+  button.textContent = "프로젝트 없음";
+  button.disabled = true;
+  const code = (text: string) => h("code", "", text);
+  const where = h("ul");
+  for (const one of looked) {
+    const row = h("li");
+    row.append(h("b", "", CLIENT[one.client]), " ", code(one.path), one.there ? " · 읽을 세션이 없습니다" : " · 폴더가 없습니다");
+    where.append(row);
+  }
+  const elsewhere = h("p");
+  elsewhere.append("기록이 다른 곳에 있으면 서버를 띄울 때 ", code("CONTEXT_FLOW_CODEX_HOME"), "이나 ", code("CONTEXT_FLOW_CLAUDE_HOME"), "으로 알려 줍니다. 먼저 둘러보려면 저장소 폴더에서 ", code("npm run demo"), "를 돌립니다.");
+  el<HTMLElement>("none").replaceChildren(
+    h("h2", "", "아직 읽을 세션이 없습니다"),
+    h("p", "", "Codex나 Claude Code로 아무 폴더에서 세션을 하나 돌리면 그 폴더가 여기 프로젝트로 나옵니다. 이 화면은 그때 저절로 이어집니다."),
+    h("p", "none-head", "찾아본 곳"),
+    where,
+    elsewhere,
+  );
+}
 /** Which projects are on the map, kept for the next time the screen is opened without being told (as an app is). */
 const remember = () => { try { localStorage.setItem("cf-last", chosen.join(",")); } catch { /* storage may be shut off */ } };
 const remembered = () => { try { return localStorage.getItem("cf-last") ?? ""; } catch { return ""; } };
@@ -425,6 +456,9 @@ function openNew() {
     const chose = localStorage.getItem("cf-new-client");
     if (chose === "claude" || chose === "codex") client = chose;
   } catch { /* storage may be shut off */ }
+  // a client that cannot be started here is not the one offered
+  const other = client === "codex" ? "claude" : "codex";
+  if (!state.clients[client] && state.clients[other]) client = other;
   if (state.trace) state.trace.shown = false;
   state.open = null;
   state.edge = null;
@@ -820,29 +854,36 @@ function wireApp(close: () => void) {
 
   // What there is to choose from, and what the address asks for: a project (its id, its name or a folder of it), or
   // several with commas between. Should the server not answer yet, this is tried again until it does.
+  // It says whether there was anything to open: with no session read anywhere yet, the screen says where it looked
+  // and is asked again a little later, so that the first session there comes up by itself.
   const open = async () => {
-    const { projects, from } = await call<{ projects: Project[]; from?: "sidebar" | "folders" }>("/api/projects");
+    const { projects, from, clients, looked } = await call<{ projects: Project[]; from?: "sidebar" | "folders"; clients?: Record<Client, boolean>; looked?: Looked[] }>("/api/projects");
     state.projects = projects;
+    if (clients) state.clients = clients;
     foundFrom = from ?? "sidebar";
     const wanted = new URLSearchParams(location.search).get("project") ?? remembered();
     const named = (name: string) => projects.find((one) => one.id === name || one.name === name || one.roots.includes(name));
     const whole = named(wanted);
     const asked = whole ? [whole] : [...new Set(wanted.split(",").map((part) => named(part.trim())).filter((one): one is Project => Boolean(one)))];
     const first = asked.length ? asked : projects.slice(0, 1);
-    if (!first.length) throw new Error("프로젝트가 하나도 없습니다. Codex나 Claude Code로 세션을 한 번 돌린 뒤 다시 열어 주세요");
+    if (!first.length) {
+      showNone(looked ?? []);
+      return false;
+    }
+    showNone(null);
     chosen = first.map((one) => one.id);
     drawPicker();
     await load(chosen.join(","));
     remember();
+    return true;
   };
   for (;;) {
     try {
-      await open();
-      break;
+      if (await open()) break;
     } catch (error) {
       if (state.alone || !net.down) throw error;
-      await new Promise((resolve) => window.setTimeout(resolve, 4000));
     }
+    await new Promise((resolve) => window.setTimeout(resolve, 4000));
   }
   let timer = 0;
   window.addEventListener("resize", () => { clearTimeout(timer); timer = window.setTimeout(render, 120); });

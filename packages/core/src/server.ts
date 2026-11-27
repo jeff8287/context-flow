@@ -8,8 +8,8 @@ import type { AddressInfo } from "node:net";
 import { userInfo } from "node:os";
 import { basename, extname, join, normalize } from "node:path";
 import { HOME } from "./home.ts";
-import { stoodBefore } from "./claude.ts";
-import { forkPoint, ownRecords } from "./codex.ts";
+import { claudeHome, stoodBefore } from "./claude.ts";
+import { codexHome, forkPoint, ownRecords } from "./codex.ts";
 import { makeBundle, maskBundle, type Spot } from "./bundle.ts";
 import { freshPlan } from "./fresh.ts";
 import { filesIn, filesNote, pieceBlock, withBlocks } from "./links.ts";
@@ -21,7 +21,7 @@ import { buildSnapshot, findProjects, nearestProject, type Built } from "./snaps
 import { standalonePage } from "./standalone.ts";
 import { appendTransfers, dropPending, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
 import { tracePiece } from "./trace.ts";
-import { listModels, startFork, startNew, startTurn, type Along, type Turn } from "./talk.ts";
+import { canStart, listModels, startFork, startNew, startTurn, type Along, type Turn } from "./talk.ts";
 import { oneLine } from "./util.ts";
 import { grown, Interest, watchRecords, type Changed } from "./watch.ts";
 
@@ -377,9 +377,13 @@ export function serve(port: number, webDir: string): Served {
         return send(200, { models: client === "codex" || client === "claude" ? await listModels(client) : [] });
       }
       if (url.pathname === "/api/projects") {
-        // from: whether they are the Codex app's sidebar projects, or were found from the folders the sessions worked in
+        // from: whether they are the Codex app's sidebar projects, or were found from the folders the sessions worked in.
+        // clients: which of the two can be started here. looked: where the records were looked for, said only when
+        // nothing was found there (a person who has not run a session yet, or whose records are kept elsewhere).
         const { projects, from } = readProjects();
-        return send(200, { projects: projects.map(shown), from });
+        const place = (client: Client, path: string) => ({ client, path: path.startsWith(HOME + "/") ? "~" + path.slice(HOME.length) : path, there: existsSync(path) });
+        const looked = projects.length ? undefined : [place("codex", codexHome()), place("claude", claudeHome())];
+        return send(200, { projects: projects.map(shown), from, clients: { codex: canStart("codex"), claude: canStart("claude") }, looked });
       }
       if (url.pathname === "/api/snapshot") {
         const made = await read(url.searchParams.get("project") ?? "");

@@ -1837,7 +1837,7 @@ function tuneNew() {
   if (!fresh || !box || !go) return;
   go.innerHTML = ICON.send;
   go.title = "새 세션 시작";
-  go.disabled = starting || !box.value.trim();
+  go.disabled = starting || !box.value.trim() || !state.clients[fresh.client];
   box.disabled = starting;
   const clip = pane().querySelector<HTMLButtonElement>(".composer .clip");
   if (clip) clip.disabled = starting;
@@ -1861,7 +1861,7 @@ function tuneNew() {
     model.disabled = starting;
   }
   const note = pane().querySelector<HTMLElement>(".fresh-note");
-  if (note) note.textContent = plan?.like ? "모델과 권한(승인, 샌드박스)은 ‘" + flat(plan.like.title, 28) + "’ 세션을 따릅니다." : CLIENT[fresh.client] + "의 기본 모델과 권한으로 시작합니다.";
+  if (note) note.textContent = !state.clients[fresh.client] ? "이 컴퓨터에서 " + CLIENT[fresh.client] + "를 찾지 못해 시작할 수 없습니다." : plan?.like ? "모델과 권한(승인, 샌드박스)은 ‘" + flat(plan.like.title, 28) + "’ 세션을 따릅니다." : CLIENT[fresh.client] + "의 기본 모델과 권한으로 시작합니다.";
   pane().querySelectorAll<HTMLElement>(".client").forEach((one) => one.classList.toggle("on", one.dataset.client === fresh.client));
   // what the new session will be given besides the request: the pieces attached, each in the colour of where it came from
   const list = pane().querySelector<HTMLElement>(".fresh-pieces");
@@ -1966,6 +1966,12 @@ export function drawNew() {
     one.type = "button";
     one.dataset.client = client;
     one.append(h("span", "sw " + client), CLIENT[client]);
+    if (!state.clients[client]) {
+      // not on this computer: there is nothing to begin the session with
+      one.disabled = true;
+      one.title = "이 컴퓨터에서 " + CLIENT[client] + "를 찾지 못했습니다. 설치돼 있으면 서버를 띄울 때 " + (client === "codex" ? "CONTEXT_FLOW_CODEX" : "CONTEXT_FLOW_CLAUDE") + "로 실행 파일을 알려 줍니다";
+      one.append(h("span", "client-off", "찾지 못함"));
+    }
     one.onclick = () => {
       if (fresh.client !== client) fresh.like = undefined; // a session of the other client is nothing to go by
       fresh.client = client;
