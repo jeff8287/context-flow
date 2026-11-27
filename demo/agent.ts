@@ -22,6 +22,8 @@ const short = (text: string, room: number) => { const flat = text.replace(/\s+/g
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const size = (bytes: number) => (bytes < 1024 ? bytes + "바이트" : (bytes / 1024).toFixed(1) + "KB");
+/** The kind of a picture, by the end of its file's name. */
+const KINDS: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 
 /** What was typed, without the pieces that came along and without the list of the files that were sent with it. */
 const typedOf = (prompt: string) => withoutPieces(prompt).trim();
@@ -103,9 +105,14 @@ function codexRecord(thread: string, turn: string, rows: Record<string, unknown>
   db.prepare("update threads set updated_at_ms = ? where id = ?").run(now, thread);
   db.close();
 }
-const codexAsked = (turn: string, prompt: string, added: string, pictures: unknown[] = []) => [
+const codexAsked = (turn: string, prompt: string, added: string, pictures: { type: string; path: string }[] = []) => [
   { type: "event_msg", payload: { type: "task_started", turn_id: turn } },
   { type: "UserMessage", content: [{ type: "text", text: prompt }, ...pictures] },
+  // The request's own item names a picture by where its file lies. What went to the model holds the picture itself,
+  // and is written beside it, as the real client writes it: that is where a picture is read from later.
+  ...(pictures.length ? [{ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: prompt },
+    ...pictures.filter((one) => existsSync(one.path)).map((one) => ({ type: "input_image", image_url: "data:" + (KINDS[one.path.split(".").pop()?.toLowerCase() ?? ""] ?? "image/png") + ";base64," + readFileSync(one.path).toString("base64") }))],
+    internal_chat_message_metadata_passthrough: { turn_id: turn, content_item_kinds: ["user.text", ...pictures.map(() => "user.image")] } } }] : []),
   // what a hook put with the prompt is a message of its own, beside it
   ...(added ? [{ type: "response_item", payload: { type: "message", id: "hook-" + turn, role: "developer", content: [{ type: "input_text", text: added }], internal_chat_message_metadata_passthrough: { turn_id: turn, content_item_kinds: ["hooks.additional_context"] } } }] : [])];
 const codexChanged = (change: { path: string; after: string; added: string }) => [{ type: "FileChange", status: "completed", changes: { [change.path]: { type: "update", unified_diff: "@@ -1,1 +1,2 @@\n " + change.after + "\n+" + change.added } } }];
@@ -220,8 +227,7 @@ function asCodex(): void {
   let thread: { id: string; cwd: string; kept?: number } | null = null;
   const turn = async (id: number, prompt: string, pictures: { type: string; path: string }[], model: string | undefined) => {
     if (!thread) return out({ id, error: { message: "no thread" } });
-    const kinds: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
-    const extra: Extra = { pictures: pictures.map((one) => (kinds[one.path.split(".").pop()?.toLowerCase() ?? ""] ?? "image") + " " + (existsSync(one.path) ? size(statSync(one.path).size) : "(읽을 수 없음)")), ...(model ? { model } : {}) };
+    const extra: Extra = { pictures: pictures.map((one) => (KINDS[one.path.split(".").pop()?.toLowerCase() ?? ""] ?? "image") + " " + (existsSync(one.path) ? size(statSync(one.path).size) : "(읽을 수 없음)")), ...(model ? { model } : {}) };
     if (thread.kept !== undefined) extra.kept = thread.kept; // said once, in the fork's first answer
     delete thread.kept;
     const turnId = "turn-" + Date.now().toString(36);

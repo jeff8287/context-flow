@@ -1,7 +1,7 @@
 // Made-up records only: nothing here reads the user's own sessions.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -16,12 +16,13 @@ import { farLinks, FILES_NOTE, filesIn, filesNote, overlaps, pieceBlock, recorde
 import { readClaudeLive, settleActivity, type ClaudeLive, type Live } from "../src/live.ts";
 import type { Item, Place, Project, Session, Snapshot, Transfer } from "../src/model.ts";
 import { flat, forgetPastes, pasteLinks } from "../src/paste.ts";
+import { forgetPictures, picturesOf } from "../src/pictures.ts";
 import { tracePiece } from "../src/trace.ts";
 import { talkOf } from "../src/read.ts";
 import { LABEL, servicePath, servicePlist } from "../src/service.ts";
 import { buildSnapshot, findProjects, nearestProject, waitingOf } from "../src/snapshot.ts";
 import { standalonePage } from "../src/standalone.ts";
-import { appendTransfers, dropPending, queuePieces, readBasket, readPending, readTransfers, saveUploads, takePending, tidyStore, writeBasket, type Pending } from "../src/store.ts";
+import { appendTransfers, dropPending, queuePieces, readBasket, readPending, readTransfers, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "../src/store.ts";
 import { startNew, type Turn } from "../src/talk.ts";
 import { typed } from "../src/util.ts";
 import { grown, Interest } from "../src/watch.ts";
@@ -1002,5 +1003,65 @@ test("what makes the screen an app is served as what it is, and the page shown w
     assert.ok(readFileSync(join(dir, "sw.js"), "utf8").includes('"/offline.html"'));
   } finally {
     await served.close();
+  }
+});
+
+test("the pictures that went with a request are read from the client's record, where they are kept; a file is read only if this tool kept it", async () => {
+  const dir = join(scratchDir, "pictures");
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  const before = process.env.CONTEXT_FLOW_HOME;
+  process.env.CONTEXT_FLOW_HOME = home;
+  forgetPictures();
+  try {
+    const dot = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"); // a picture of one dot
+    const png = { type: "image", source: { type: "base64", media_type: "image/png", data: dot.toString("base64") } };
+    const read = async (client: "codex" | "claude", path: string, turn: string) => (await picturesOf(client, path, turn)).map((one) => one.type + (one.bytes.equals(dot) ? " dot" : " " + one.bytes.toString("utf8")));
+    // Claude Code: the request's own record holds them
+    const claude = join(dir, "claude.jsonl");
+    writeFileSync(claude,
+      line({ type: "user", uuid: "u1", message: { role: "user", content: [png, { type: "text", text: "이 그림을 봐줘" }] } }) +
+      line({ type: "user", uuid: "t1", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: [png] }] } }) +
+      line({ type: "user", uuid: "u2", message: { role: "user", content: "그림 없는 말" } }));
+    assert.deepEqual(await read("claude", claude, "u1"), ["image/png dot"]);
+    assert.deepEqual(await read("claude", claude, "t1"), []); // a picture a tool gave back was not sent with a request
+    assert.deepEqual(await read("claude", claude, "u2"), []);
+    // the record goes on: what was added is found without the rest being read again, a line half written is left for the next time
+    const jpeg = { type: "image", source: { type: "base64", media_type: "image/jpeg", data: Buffer.from("jpeg").toString("base64") } };
+    const next = line({ type: "user", uuid: "u3", message: { role: "user", content: [{ type: "text", text: "둘 더" }, jpeg, png] } });
+    appendFileSync(claude, next.slice(0, 40));
+    assert.deepEqual(await read("claude", claude, "u3"), []);
+    appendFileSync(claude, next.slice(40));
+    assert.deepEqual(await read("claude", claude, "u3"), ["image/jpeg jpeg", "image/png dot"]);
+    assert.deepEqual(await read("claude", claude, "u1"), ["image/png dot"]);
+    // Codex: what went to the model in the turn holds them; the request's own item names a file, which may be gone
+    const address = "data:image/png;base64," + dot.toString("base64");
+    const asked = (turn: string, content: unknown[]) => line({ type: "event_msg", payload: { type: "item_completed", turn_id: turn, item: { type: "UserMessage", content: [{ type: "text", text: "봐줘" }, ...content] } } });
+    const kept = saveUploads([{ name: "kept.png", type: "image/png", data: dot.toString("base64") }]).saved[0].path;
+    const stray = join(dir, "stray.png");
+    writeFileSync(stray, dot);
+    const codex = join(dir, "rollout.jsonl");
+    writeFileSync(codex,
+      asked("t1", [{ type: "local_image", path: "/nowhere/gone.png" }, { type: "local_image", path: "/nowhere/gone-2.png" }]) +
+      line({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "봐줘" }, { type: "input_image", image_url: address }, { type: "input_text", text: "</image>" }, { type: "input_image", image_url: "data:image/webp;base64," + Buffer.from("webp").toString("base64") }], internal_chat_message_metadata_passthrough: { turn_id: "t1" } } }) +
+      asked("t2", [{ type: "image", image_url: address }]) + // pasted in the app: in the item itself
+      asked("t3", [{ type: "local_image", path: stray }]) + // a file that is not one this tool kept is not read, wherever it lies
+      asked("t4", [{ type: "local_image", path: kept }]));
+    assert.deepEqual(await read("codex", codex, "t1"), ["image/png dot", "image/webp webp"]);
+    assert.deepEqual(await read("codex", codex, "t2"), ["image/png dot"]);
+    assert.deepEqual(await read("codex", codex, "t3"), []);
+    assert.deepEqual(await read("codex", codex, "t4"), ["image/png dot"]);
+    assert.deepEqual(await read("codex", codex, "no such turn"), []);
+    assert.deepEqual(await read("codex", join(dir, "no such record"), "t1"), []);
+    // only a file in the tool's own folder of such files is one it kept: not one beside it, nor one a link in it leads to
+    assert.equal(uploadedFile(kept), realpathSync(kept));
+    assert.equal(uploadedFile(stray), null);
+    assert.equal(uploadedFile(join(dirname(kept), "..", "..", "..", "stray.png")), null);
+    symlinkSync(stray, join(dirname(kept), "link.png"));
+    assert.equal(uploadedFile(join(dirname(kept), "link.png")), null);
+    assert.equal(uploadedFile(dirname(kept)), null); // a folder is not a file
+  } finally {
+    if (before === undefined) delete process.env.CONTEXT_FLOW_HOME;
+    else process.env.CONTEXT_FLOW_HOME = before;
   }
 });

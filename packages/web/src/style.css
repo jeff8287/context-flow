@@ -546,7 +546,10 @@ body.moving, body.moving * { cursor: grabbing !important; user-select: none; -we
 .file.pic img { flex: none; width: 34px; height: 34px; border-radius: 5px; object-fit: cover; }
 .files-said { color: var(--muted); font-size: 12px; }
 .sent-files { display: flex; flex-wrap: wrap; gap: 6px; }
-.sent-files img { max-width: 132px; max-height: 96px; border-radius: 8px; border: 1px solid var(--edge); object-fit: cover; background: var(--surface); }
+.sent-files img { max-width: 132px; max-height: 96px; min-width: 28px; min-height: 28px; border-radius: 8px; border: 1px solid var(--edge); object-fit: cover; background: var(--surface); }
+.msg .sent-files img { cursor: zoom-in; }
+.lightbox { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 32px; background: rgba(10, 12, 16, .8); cursor: zoom-out; }
+.lightbox img { max-width: 100%; max-height: calc(100vh - 64px); border-radius: 10px; background: var(--surface); box-shadow: 0 12px 48px rgba(0, 0, 0, .45); }
 .composer-foot { display: flex; align-items: center; min-height: 20px; margin-top: -2px; }
 .composer-foot .model { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; color: var(--faint); font-size: 11.5px; }
 .composer-foot select { max-width: 240px; height: 22px; padding: 0 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11.5px; }
