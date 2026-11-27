@@ -1,14 +1,14 @@
 // Reads Claude Code's own records into the common shapes. Read-only.
 //   one conversation: ~/.claude/projects/<folder with every non-letter turned into ->/<session id>.jsonl
 //   its subagents:    ~/.claude/projects/<folder>/<session id>/subagents/agent-<id>.jsonl
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Item, Project, Session } from "./model.ts";
 import { activityOf } from "./codex.ts";
 import { PIECE_MARK, withoutPieces } from "./links.ts";
 import { HOME } from "./home.ts";
-import { ms, oneLine, typed, under } from "./util.ts";
+import { ms, oneLine, typed, within } from "./util.ts";
 
 export function claudeHome(): string {
   return process.env.CONTEXT_FLOW_CLAUDE_HOME || join(HOME, ".claude");
@@ -388,11 +388,79 @@ export async function stoodBefore(path: string, prompt: string): Promise<Stood> 
   return { not: summed ? "summed" : "back" };
 }
 
+/** The folder a transcript's session works in: what its first record that says so says. Only its beginning is read. */
+function firstCwd(path: string): string | null {
+  let file: number;
+  try {
+    file = openSync(path, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const room = Buffer.allocUnsafe(1 << 16);
+    let rest: Buffer = Buffer.alloc(0); // the line being gathered
+    for (let at = 0, lines = 0; at < 1 << 22 && lines < 400;) {
+      const got = readSync(file, room, 0, room.length, at);
+      if (!got) break;
+      at += got;
+      rest = Buffer.concat([rest, room.subarray(0, got)]);
+      for (let end = rest.indexOf(10); end !== -1; end = rest.indexOf(10)) {
+        const line = rest.subarray(0, end);
+        rest = rest.subarray(end + 1);
+        lines += 1;
+        if (!line.includes('"cwd"')) continue;
+        try {
+          const record = JSON.parse(line.toString("utf8"));
+          if (typeof record?.cwd === "string" && record.cwd) return record.cwd;
+        } catch { /* a line that is not whole */ }
+      }
+    }
+  } finally {
+    closeSync(file);
+  }
+  return null;
+}
+
+/** A folder of transcripts -> the folder its sessions work in. Found once: it does not change. */
+const worksIn = new Map<string, string>();
+
+/** The folders Claude Code sessions worked in, each with when a session there was last written to. A folder of
+ *  transcripts is named after where its sessions work, with every character that is no letter or digit turned into
+ *  "-": the name does not say which folder that was, a record in it does. */
+export function claudeFolders(home = claudeHome()): Map<string, number> {
+  const found = new Map<string, number>();
+  const top = join(home, "projects");
+  let folders: string[] = [];
+  try {
+    folders = readdirSync(top);
+  } catch {
+    return found;
+  }
+  for (const folder of folders) {
+    const dir = join(top, folder);
+    let files: { name: string; at: number }[] = [];
+    try {
+      files = readdirSync(dir).filter((name) => name.endsWith(".jsonl")).map((name) => ({ name, at: statSync(join(dir, name)).mtimeMs })).sort((one, other) => other.at - one.at);
+    } catch {
+      continue; // not a folder
+    }
+    if (!files.length) continue;
+    let cwd = worksIn.get(dir);
+    if (cwd === undefined) {
+      cwd = files.slice(0, 3).map((file) => firstCwd(join(dir, file.name))).find((one): one is string => Boolean(one));
+      if (cwd) worksIn.set(dir, cwd);
+    }
+    if (cwd) found.set(cwd, Math.max(found.get(cwd) ?? 0, files[0].at));
+  }
+  return found;
+}
+
 /** The Claude Code sessions whose working folder lies in the project, with what they said and changed. */
 export async function readClaudeSessions(project: Project, home = claudeHome(), now = Date.now()): Promise<{ transcripts: Transcript[]; notes: string[] }> {
   const notes: string[] = [];
   const top = join(home, "projects");
-  if (!existsSync(top)) return { transcripts: [], notes: ["Claude Code의 기록 폴더(" + top + ")가 없습니다."] };
+  // (where Claude Code was never used there is nothing to say of it)
+  if (!existsSync(top)) return { transcripts: [], notes: existsSync(home) ? ["Claude Code의 기록 폴더(" + top + ")가 없습니다."] : [] };
   const prefixes = project.roots.map(folderName);
   const transcripts: Transcript[] = [];
   for (const folder of readdirSync(top)) {
@@ -409,7 +477,7 @@ export async function readClaudeSessions(project: Project, home = claudeHome(), 
       if (!name.endsWith(".jsonl")) continue;
       const id = name.slice(0, -6);
       const main = await readTranscript(join(dir, name), id, null, now);
-      if (!main || !project.roots.some((root) => under(main.session.cwd, root))) continue;
+      if (!main || !within(main.session.cwd, project)) continue;
       main.session.projectId = project.id;
       transcripts.push(main);
       const subs = join(dir, id, "subagents");

@@ -1,15 +1,16 @@
 // Made-up records only: nothing here reads the user's own sessions.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { answer, makeBundle, maskBundle, readBundle } from "../src/bundle.ts";
 import { folderName, readClaudeSessions, stoodBefore } from "../src/claude.ts";
 import { freshPlan } from "../src/fresh.ts";
-import { applyRollout, forkPoint, keptTurn, readRollout, recordFiles, type RecordFiles } from "../src/codex.ts";
+import { applyRollout, forkPoint, keptTurn, readCodexThreads, readRollout, recordFiles, type RecordFiles } from "../src/codex.ts";
 import { hookStates } from "../src/hooks.ts";
 import { serve } from "../src/server.ts";
 import { farLinks, FILES_NOTE, filesIn, filesNote, forkedBefore, overlaps, pieceBlock, recordedLinks, transferLinks, withBlocks, withoutPieces, withPieces, type Kept } from "../src/links.ts";
@@ -17,6 +18,7 @@ import { readClaudeLive, settleActivity, type ClaudeLive, type Live } from "../s
 import type { Item, Place, Project, Session, Snapshot, Transfer } from "../src/model.ts";
 import { flat, forgetPastes, pasteLinks } from "../src/paste.ts";
 import { forgetPictures, picturesOf } from "../src/pictures.ts";
+import { folderProjects, forgetProjects, readProjects } from "../src/projects.ts";
 import { tracePiece } from "../src/trace.ts";
 import { goneOf, talkOf } from "../src/read.ts";
 import { LABEL, servicePath, servicePlist } from "../src/service.ts";
@@ -744,6 +746,106 @@ test("several projects on one map are read as one: a piece that went between two
     delete process.env.CONTEXT_FLOW_CLAUDE_HOME;
     delete process.env.CONTEXT_FLOW_CODEX_HOME;
   }
+});
+
+test("where the Codex app has no projects, the folders the sessions worked in stand for them: a work tree is a project, and a session is of one project only", async () => {
+  forgetProjects();
+  const base = join(scratchDir, "only"); // stands for a home folder: a session was begun in it, and every other folder lies under it
+  const claude = join(scratchDir, "only-claude");
+  const codex = join(scratchDir, "only-codex");
+  const repo = join(base, "repo"); // a git work tree
+  const tree = join(base, "repo-tree"); // a linked work tree: what it holds is a .git file
+  const notes = join(base, "notes"); // a folder that lies in no work tree but the "home" one's
+  const cli = join(base, "cli"); // a folder only a Codex thread worked in
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  mkdirSync(join(repo, "packages", "web"), { recursive: true });
+  mkdirSync(tree, { recursive: true });
+  writeFileSync(join(tree, ".git"), "gitdir: " + join(repo, ".git", "worktrees", "tree") + "\n");
+  mkdirSync(notes, { recursive: true });
+  mkdirSync(cli, { recursive: true });
+  mkdirSync(codex, { recursive: true });
+  const hour = (n: number) => new Date(Date.parse("2026-01-01T00:00:00Z") + n * 3_600_000);
+  // a session of Claude Code: its transcript lies in a folder named after where it works, and was written to last at that hour
+  const session = (id: string, cwd: string, at: number, before = "") => {
+    const dir = join(claude, "projects", folderName(cwd));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, id + ".jsonl"), before + line({ type: "user", uuid: id + "-u", cwd, timestamp: hour(at).toISOString(), message: { role: "user", content: id + "의 요청" } })
+      + line({ type: "assistant", uuid: id + "-a", cwd, timestamp: hour(at).toISOString(), message: { role: "assistant", model: "m", stop_reason: "end_turn", content: [{ type: "text", text: "답" }] } }));
+    utimesSync(join(dir, id + ".jsonl"), hour(at), hour(at));
+  };
+  session("at-home", base, 0);
+  session("in-repo", repo, 1);
+  // its first lines do not say where it works, and one of them holds the words a record says it with: the record's own word is taken
+  session("in-notes", notes, 2, line({ type: "queue-operation", content: "\"cwd\":\"/elsewhere\"" }) + line({ type: "last-prompt", lastPrompt: "x" }));
+  session("in-tree", tree, 3);
+  session("in-web", join(repo, "packages", "web"), 4);
+  // Codex used from its CLI only: threads, and no projects
+  const db = new DatabaseSync(join(codex, "state_5.sqlite"));
+  db.exec("create table threads (id text primary key, rollout_path text, cwd text, title text, name text, model text, created_at_ms integer, updated_at_ms integer, thread_source text, source text, archived integer, first_user_message text, attached_thread_parent_id text); create table thread_spawn_edges (parent_thread_id text, child_thread_id text);");
+  const thread = db.prepare("insert into threads (id, cwd, title, created_at_ms, updated_at_ms, archived) values (?, ?, ?, ?, ?, 0)");
+  thread.run("t1", repo, "저장소에서", hour(5).getTime(), hour(5).getTime());
+  thread.run("t2", cli, "CLI에서", hour(0.5).getTime(), hour(0.5).getTime());
+  db.close();
+
+  const found = folderProjects(Date.now(), claude, codex);
+  // a project a work tree (or a folder in none), the one worked in last first; a folder under a work tree is of that tree
+  assert.deepEqual(found.map((one) => [one.name, one.roots]), [["repo", [repo]], ["repo-tree", [tree]], ["notes", [notes]], ["cli", [cli]], ["only", [base]]]);
+  assert.ok(found.every((one) => /^dir-[0-9a-f]{12}$/.test(one.id)) && new Set(found.map((one) => one.id)).size === 5);
+  // the folder the others lie under says which folders under it are theirs; none of the others holds another's
+  assert.deepEqual(found.map((one) => (one.not ?? []).slice().sort()), [[], [], [], [], [cli, notes, repo, tree].sort()]);
+  // so every session is of one project, and of one only
+  const mine: Record<string, string[]> = {};
+  for (const project of found) {
+    const sessions = (await readClaudeSessions(project, claude, hour(6).getTime())).transcripts.map((one) => one.session.id);
+    mine[project.name] = [...sessions, ...readCodexThreads(project, new Map(), codex).sessions.map((one) => one.id)].sort();
+  }
+  assert.deepEqual(mine, { repo: ["in-repo", "in-web", "t1"], "repo-tree": ["in-tree"], notes: ["in-notes"], cli: ["t2"], only: ["at-home"] });
+  // a new session of the outer project is not begun in a folder that is another project's
+  const home = found.find((one) => one.name === "only")!;
+  assert.deepEqual(freshPlan(home, [], { client: "claude", cwd: repo }), { error: "새 세션은 이 프로젝트의 폴더 안에서만 시작합니다" });
+  assert.equal((freshPlan(home, [], { client: "claude" }) as { cwd: string }).cwd, base);
+
+  process.env.CONTEXT_FLOW_CLAUDE_HOME = claude;
+  process.env.CONTEXT_FLOW_CODEX_HOME = codex;
+  try {
+    // that is what there is to choose from while the Codex app has no projects
+    forgetProjects();
+    assert.deepEqual([readProjects().from, readProjects().projects.map((one) => one.name)], ["folders", ["repo", "repo-tree", "notes", "cli", "only"]]);
+    // the screen is not told which folders are another project's: a snapshot's project is its name and its folders
+    const made = await buildSnapshot(home, new Map(), hour(6).getTime(), [], [], { claude: new Map(), codexHolders: () => [] });
+    assert.deepEqual([Object.keys(made.snapshot.project).sort(), made.snapshot.sessions.map((one) => one.id)], [["id", "name", "roots"], ["at-home"]]);
+    // The server gives them out as found from the folders, and says so on the map of each. (They are found anew
+    // every few seconds at most: here, as they were found a moment ago.)
+    process.env.CONTEXT_FLOW_HOME = join(scratchDir, "only-flow");
+    const served = serve(0, join(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "public"));
+    try {
+      const at = "http://127.0.0.1:" + (await served.ready);
+      const listed = (await (await fetch(at + "/api/projects")).json()) as { from: string; projects: Project[] };
+      assert.deepEqual([listed.from, listed.projects.map((one) => Object.keys(one).sort().join(" ") + ":" + one.name)], ["folders", ["repo", "repo-tree", "notes", "cli", "only"].map((name) => "id name roots:" + name)]);
+      const snap = (await (await fetch(at + "/api/snapshot?project=" + home.id)).json()) as Snapshot;
+      assert.deepEqual(snap.sessions.map((one) => one.id), ["at-home"]);
+      assert.ok(snap.notes.some((note) => note.startsWith("Codex 앱의 사이드바에 프로젝트가 없어서")));
+      // a project is asked for by its folder or its name as well (the Codex thread there has no record to be read, and is left out)
+      assert.deepEqual(((await (await fetch(at + "/api/snapshot?project=" + encodeURIComponent(repo))).json()) as Snapshot).sessions.map((one) => one.id).sort(), ["in-repo", "in-web"]);
+    } finally {
+      await served.close();
+      delete process.env.CONTEXT_FLOW_HOME;
+    }
+    // once the app has projects, they are the projects; unless the folders are asked for
+    writeFileSync(join(codex, ".codex-global-state.json"), JSON.stringify({ "local-projects": { side: { name: "사이드바의 것", rootPaths: [repo] } } }));
+    assert.deepEqual([readProjects().from, readProjects().projects.map((one) => one.id)], ["sidebar", ["side"]]);
+    process.env.CONTEXT_FLOW_PROJECTS = "folders";
+    assert.deepEqual([readProjects().from, readProjects().projects.length], ["folders", 5]);
+  } finally {
+    delete process.env.CONTEXT_FLOW_CLAUDE_HOME;
+    delete process.env.CONTEXT_FLOW_CODEX_HOME;
+    delete process.env.CONTEXT_FLOW_PROJECTS;
+  }
+  // where neither client was ever used there is nothing to choose from, and nothing is said of what is not there
+  forgetProjects();
+  assert.deepEqual(folderProjects(Date.now(), join(scratchDir, "no-claude"), join(scratchDir, "no-codex")), []);
+  assert.deepEqual(readCodexThreads(home, new Map(), join(scratchDir, "no-codex")).notes, []);
+  assert.deepEqual((await readClaudeSessions(home, join(scratchDir, "no-claude"))).notes, []);
 });
 
 test("a bundle keeps where tiles were put, and which project each session is of when it is taken from several", () => {

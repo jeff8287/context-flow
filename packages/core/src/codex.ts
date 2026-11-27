@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { PIECE_MARK, withoutPieces } from "./links.ts";
 import type { Activity, Item, Origin, Project, Session } from "./model.ts";
 import { HOME } from "./home.ts";
-import { ms, oneLine, typed, under } from "./util.ts";
+import { ms, oneLine, typed, within } from "./util.ts";
 
 export function codexHome(): string {
   return process.env.CONTEXT_FLOW_CODEX_HOME || join(HOME, ".codex");
@@ -90,6 +90,21 @@ export function readCodexProjects(home = codexHome()): { projects: Project[]; as
   return { projects, assigned };
 }
 
+/** The folders Codex threads worked in, each with when a thread there was last added to. */
+export function threadFolders(home = codexHome()): Map<string, number> {
+  const found = new Map<string, number>();
+  const db = open(home);
+  if (!db) return found;
+  try {
+    for (const row of db.prepare("select cwd, max(updated_at_ms) as at from threads where cwd is not null and cwd != '' group by cwd").all() as any[]) found.set(String(row.cwd), Number(row.at ?? 0));
+  } catch {
+    // no list of threads to speak of
+  } finally {
+    db.close();
+  }
+  return found;
+}
+
 function open(home: string): DatabaseSync | null {
   const path = join(home, "state_5.sqlite");
   if (!existsSync(path)) return null;
@@ -115,7 +130,8 @@ export interface CodexThreads {
 export function readCodexThreads(project: Project, assigned: Map<string, string>, home = codexHome()): CodexThreads {
   const notes: string[] = [];
   const db = open(home);
-  if (!db) return { sessions: [], notes: ["Codex의 스레드 목록(state_5.sqlite)을 열지 못했습니다."] };
+  // (where Codex was never used there is nothing to say of it)
+  if (!db) return { sessions: [], notes: existsSync(home) ? ["Codex의 스레드 목록(state_5.sqlite)을 열지 못했습니다."] : [] };
   const sessions: Session[] = [];
   try {
     const rows = db.prepare("select id, rollout_path, cwd, title, name, model, created_at_ms, updated_at_ms, thread_source, source, archived, first_user_message, attached_thread_parent_id from threads").all() as unknown as ThreadRow[];
@@ -129,7 +145,7 @@ export function readCodexThreads(project: Project, assigned: Map<string, string>
     for (const row of rows) {
       if (reviewer(row)) continue;
       const cwd = row.cwd ?? "";
-      const here = assigned.get(row.id) === project.id || (!assigned.has(row.id) && project.roots.some((root) => under(cwd, root)));
+      const here = assigned.get(row.id) === project.id || (!assigned.has(row.id) && within(cwd, project));
       if (!here) continue;
       let origin: Origin = "user";
       let parentId: string | null = parents.get(row.id) ?? null;

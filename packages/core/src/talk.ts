@@ -48,6 +48,9 @@ type Emit = (event: TurnEvent) => void;
 const cut = (text: unknown, room: number) => { const flat = String(text ?? ""); return flat.length > room ? flat.slice(0, room) + "…" : flat; };
 const tail = (text: string) => text.trim().split("\n").slice(-3).join(" ").slice(-300);
 
+/** Whether a client could not be started because it is not there to start. */
+const notThere = (error: Error) => (error as NodeJS.ErrnoException).code === "ENOENT";
+
 /** The Codex the desktop app carries is the one that wrote its threads; the one on the PATH may be older. */
 function codexBin(): string {
   const bundled = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
@@ -89,7 +92,7 @@ function runCodex(session: Where, prompt: string, along: Along, emit: Emit, name
     child.kill();
   };
   child.stderr.on("data", (chunk) => { stderr = (stderr + String(chunk)).slice(-2000); });
-  child.on("error", (error) => finish(false, "Codex를 실행하지 못했습니다: " + error.message));
+  child.on("error", (error) => finish(false, notThere(error) ? "Codex를 찾지 못했습니다. 설치돼 있는지 봐 주세요. 실행 파일이 다른 곳에 있으면 CONTEXT_FLOW_CODEX로 알려 줍니다" : "Codex를 실행하지 못했습니다: " + error.message));
   child.on("exit", (code) => finish(false, stopped ? "멈췄습니다" : "Codex가 답을 끝내기 전에 닫혔습니다 (" + code + ") " + tail(stderr)));
   send({ id: 0, method: "initialize", params: { clientInfo: { name: "context-flow", title: "context flow", version: "0.0.1" } } });
   createInterface({ input: child.stdout }).on("line", (line) => {
@@ -231,7 +234,7 @@ function runClaude(session: Where & { id: string }, prompt: string, along: Along
     setTimeout(() => child.kill(), 500);
   };
   child.stderr.on("data", (chunk) => { stderr = (stderr + String(chunk)).slice(-2000); });
-  child.on("error", (error) => finish(false, "Claude Code를 실행하지 못했습니다: " + error.message));
+  child.on("error", (error) => finish(false, notThere(error) ? "Claude Code를 찾지 못했습니다. 설치돼 있는지 봐 주세요. 실행 파일이 다른 곳에 있으면 CONTEXT_FLOW_CLAUDE로 알려 줍니다" : "Claude Code를 실행하지 못했습니다: " + error.message));
   child.on("exit", (code) => finish(false, stopped ? "멈췄습니다" : "Claude Code가 답을 끝내기 전에 닫혔습니다 (" + code + ") " + tail(stderr)));
   // a picture is handed over as it is, before the words that are about it
   const pictures: unknown[] = [];

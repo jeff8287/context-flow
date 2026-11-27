@@ -1,7 +1,7 @@
 // Where and how a session begun from this tool would run. Worked out the same way by the server, which begins it,
 // and by the screen, which shows it beforehand and lets the person choose otherwise. Nothing of Node in here.
 import type { Client, Project, Session } from "./model.ts";
-import { under } from "./util.ts";
+import { within } from "./util.ts";
 
 /** What the person chose, if anything. from: the session the first piece came from. like: a session's id, or "none" for the client's own defaults. */
 export interface FreshChoice { client: Client; cwd?: string; like?: string; from?: string }
@@ -19,7 +19,7 @@ export interface FreshPlan {
 const main = (session: Session) => session.origin !== "subagent" && session.origin !== "side" && session.activity !== "archived";
 
 export function freshPlan(project: Project, sessions: Session[], choice: FreshChoice): FreshPlan | { error: string } {
-  const inside = (path: string) => project.roots.some((root) => under(path, root));
+  const inside = (path: string) => within(path, project);
   const recent = sessions.filter(main).sort((a, b) => b.updatedAt - a.updatedAt);
   const folders = [...new Set([...project.roots, ...recent.map((session) => session.cwd).filter(inside)])].slice(0, 12);
   const source = sessions.find((session) => session.id === choice.from);

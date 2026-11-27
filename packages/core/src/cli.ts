@@ -18,7 +18,8 @@ import { HOME } from "./home.ts";
 import { serve } from "./server.ts";
 import { installService, plistPath, restartService, serviceStatus, uninstallService } from "./service.ts";
 import { standalonePage } from "./standalone.ts";
-import { buildSnapshot, findProject, findProjects, readCodexProjects } from "./snapshot.ts";
+import { FROM_FOLDERS, readProjects } from "./projects.ts";
+import { buildSnapshot, findProject, findProjects } from "./snapshot.ts";
 
 process.removeAllListeners("warning"); // node:sqlite still announces itself as experimental on every start
 
@@ -26,15 +27,16 @@ const [command, ...rest] = process.argv.slice(2);
 const flag = (name: string) => (rest.includes(name) ? rest[rest.indexOf(name) + 1] : undefined);
 
 if (command === "scan") {
-  const { projects, assigned } = readCodexProjects();
+  const { projects, assigned, from } = readProjects();
   const wanted = rest.find((value) => !value.startsWith("--")) ?? process.cwd();
   const project = findProject(wanted, projects);
   if (!project) {
-    console.error("프로젝트를 찾지 못했습니다: " + wanted + "\n있는 것: " + projects.map((item) => item.name).join(", "));
+    console.error("프로젝트를 찾지 못했습니다: " + wanted + "\n있는 것" + (from === "folders" ? " (세션이 일한 폴더에서 찾음)" : "") + ": " + (projects.map((item) => item.name).join(", ") || "없음. Codex나 Claude Code로 세션을 한 번 돌린 뒤 다시 해 주세요"));
     process.exit(1);
   }
   const began = Date.now();
   const { snapshot } = await buildSnapshot(project, assigned);
+  if (from === "folders") snapshot.notes.push(FROM_FOLDERS);
   const count = <T>(list: T[], key: (item: T) => string) => Object.fromEntries([...Map.groupBy(list, key)].map(([name, group]) => [name, group.length]));
   console.log(JSON.stringify({
     project: project.name,
@@ -51,7 +53,7 @@ if (command === "scan") {
     ms: Date.now() - began,
   }, null, 1));
 } else if (command === "export") {
-  const { projects, assigned } = readCodexProjects();
+  const { projects, assigned } = readProjects();
   const taken = new Set(["--out", "--sessions", "--mask-words"].map((name) => flag(name)));
   const wanted = rest.find((value) => !value.startsWith("--") && !taken.has(value)) ?? process.cwd();
   const chosen = findProjects(wanted, projects);

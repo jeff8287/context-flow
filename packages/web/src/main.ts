@@ -285,6 +285,8 @@ const address = () => {
   history.replaceState(null, "", "?project=" + chosen.map(encodeURIComponent).join(","));
   remember();
 };
+/** Whether the projects on offer are the Codex app's sidebar projects, or were found from the folders the sessions worked in. */
+let foundFrom: "sidebar" | "folders" = "sidebar";
 /** Which projects are on the map, kept for the next time the screen is opened without being told (as an app is). */
 const remember = () => { try { localStorage.setItem("cf-last", chosen.join(",")); } catch { /* storage may be shut off */ } };
 const remembered = () => { try { return localStorage.getItem("cf-last") ?? ""; } catch { return ""; } };
@@ -307,8 +309,9 @@ function drawPicker() {
   const menu = el<HTMLElement>("project-menu");
   menu.textContent = "";
   if (state.alone) return;
-  menu.append(h("div", "proj-hint", "이름을 누르면 그 프로젝트만 봅니다. 앞의 네모를 누르면 지금 지도에 함께 올립니다."));
-  // the ones on the map first, in the order they were put there; then the rest, as the Codex sidebar has them
+  menu.append(h("div", "proj-hint", "이름을 누르면 그 프로젝트만 봅니다. 앞의 네모를 누르면 지금 지도에 함께 올립니다." + (foundFrom === "folders" && !state.bundle ? " Codex 앱의 프로젝트가 없어서, 세션이 일한 폴더를 최근 순으로 보입니다." : "")));
+  // the ones on the map first, in the order they were put there; then the rest, as the Codex sidebar has them (or,
+  // found from the folders, the one worked in last first)
   const listed = state.bundle ? state.projects : [...on, ...state.projects.filter((one) => !chosen.includes(one.id))];
   for (const one of listed) {
     const here = !state.bundle && chosen.includes(one.id);
@@ -415,9 +418,12 @@ function widen(added?: string) {
 /** The pane in which a new session is begun. Which client it was begun with last is kept. */
 function openNew() {
   if (state.bundle) return; // nothing is begun from an exported record
-  let client: "codex" | "claude" = "codex";
+  // the client chosen last time; before any was chosen, the client of the session of this map that was at work last
+  const last = [...state.sessions.values()].filter((session) => session.origin !== "subagent" && session.origin !== "side").sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  let client: "codex" | "claude" = last?.client ?? "codex";
   try {
-    if (localStorage.getItem("cf-new-client") === "claude") client = "claude";
+    const chose = localStorage.getItem("cf-new-client");
+    if (chose === "claude" || chose === "codex") client = chose;
   } catch { /* storage may be shut off */ }
   if (state.trace) state.trace.shown = false;
   state.open = null;
@@ -815,14 +821,15 @@ function wireApp(close: () => void) {
   // What there is to choose from, and what the address asks for: a project (its id, its name or a folder of it), or
   // several with commas between. Should the server not answer yet, this is tried again until it does.
   const open = async () => {
-    const { projects } = await call<{ projects: Project[] }>("/api/projects");
+    const { projects, from } = await call<{ projects: Project[]; from?: "sidebar" | "folders" }>("/api/projects");
     state.projects = projects;
+    foundFrom = from ?? "sidebar";
     const wanted = new URLSearchParams(location.search).get("project") ?? remembered();
     const named = (name: string) => projects.find((one) => one.id === name || one.name === name || one.roots.includes(name));
     const whole = named(wanted);
     const asked = whole ? [whole] : [...new Set(wanted.split(",").map((part) => named(part.trim())).filter((one): one is Project => Boolean(one)))];
     const first = asked.length ? asked : projects.slice(0, 1);
-    if (!first.length) throw new Error("Codex에 프로젝트가 하나도 없습니다");
+    if (!first.length) throw new Error("프로젝트가 하나도 없습니다. Codex나 Claude Code로 세션을 한 번 돌린 뒤 다시 열어 주세요");
     chosen = first.map((one) => one.id);
     drawPicker();
     await load(chosen.join(","));

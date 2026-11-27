@@ -159,7 +159,7 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
     for (const item of part.items) if (fresh.has(item.sessionId)) items.push(item);
   }
   if (many) for (const session of sessions) session.projectId = (nearestProject(session.cwd, holders.get(session.id)!) ?? holders.get(session.id)![0]).id;
-  const whole: Project = many ? { id: projects.map((one) => one.id).join(","), name: projects.map((one) => one.name).join(" + "), roots: [...new Set(projects.flatMap((one) => one.roots))] } : projects[0];
+  const whole: Project = many ? { id: projects.map((one) => one.id).join(","), name: projects.map((one) => one.name).join(" + "), roots: [...new Set(projects.flatMap((one) => one.roots))] } : { id: projects[0].id, name: projects[0].name, roots: projects[0].roots };
   sessions.sort((a, b) => a.startedAt - b.startedAt);
   // Where each fork was made, in its parent's talk. A Codex fork says how far into a file of a thread its history
   // goes: when that thread is its parent, the last turn before that place is the last it keeps.
@@ -183,7 +183,7 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
   notes.push("점선 화살표(붙여넣기)는 기록에 남은 것이 아니라 글자를 견줘 찾은 것입니다: 요청에 친 글 가운데 80자 이상이, 다른 세션이 그보다 먼저 한 답변이나 변경과 같을 때. 파일에서 직접 복사한 글도 잡힐 수 있습니다.");
   const bodies = new Map(items.map((item) => [item.id, item]));
   return {
-    snapshot: { version: 1, madeAt: now, project: whole, ...(many ? { projects } : {}), sessions, items: items.map(head), links: [...recorded.links, ...sent, ...pasted], waiting: waitingOf(pending, sessions, items), far: farLinks(transfers, sessions, items), hooks: hookStates(), overlaps: overlaps(items, whole), notes },
+    snapshot: { version: 1, madeAt: now, project: whole, ...(many ? { projects: projects.map((one) => ({ id: one.id, name: one.name, roots: one.roots })) } : {}), sessions, items: items.map(head), links: [...recorded.links, ...sent, ...pasted], waiting: waitingOf(pending, sessions, items), far: farLinks(transfers, sessions, items), hooks: hookStates(), overlaps: overlaps(items, whole), notes },
     bodies,
     gone,
   };
