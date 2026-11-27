@@ -36,8 +36,9 @@ let forking = "";
 const texts = new Map<string, Said>();
 /** A stretch of the open talk that was said and then taken back, and the request it is shown before. */
 interface Left { before: string | null; items: Said[] }
-/** Those of the talk that is open. */
+/** Those of the talk that is open, and the ids of what is in them. */
 let left: Left[] = [];
+const leftIds = new Set<string>();
 /** The stretch of text now selected, if it can be kept as a piece. */
 let chosen: { itemId: string; start: number; end: number } | null = null;
 let wired = false;
@@ -247,7 +248,7 @@ function drawBasket() {
     chip.style.setProperty("--c", colorOf(piece.sessionId));
     const body = h("button", "piece-body", flat(piece.text, 20));
     body.type = "button";
-    body.title = "‘" + whose(piece) + "’의 " + KIND[piece.kind] + "에서" + (afar(piece) && piece.where?.projectName ? " (프로젝트 " + piece.where.projectName + ")" : "") + "\n" + piece.text.slice(0, 400) + "\n\n" + (on ? "누르면 이 말에서 뗍니다 · 끌면 붙인 조각이 모두 함께 갑니다" : "누르면 이 말에 붙여 보냅니다 · 끌어서 다른 세션에 놓을 수 있습니다");
+    body.title = "‘" + whose(piece) + "’의 " + KIND[piece.kind] + "에서" + (piece.left ? " (고치거나 되감기 전의 말)" : "") + (afar(piece) && piece.where?.projectName ? " (프로젝트 " + piece.where.projectName + ")" : "") + "\n" + piece.text.slice(0, 400) + "\n\n" + (on ? "누르면 이 말에서 뗍니다 · 끌면 붙인 조각이 모두 함께 갑니다" : "누르면 이 말에 붙여 보냅니다 · 끌어서 다른 세션에 놓을 수 있습니다");
     carries(body, () => together(piece));
     body.onclick = () => {
       if (on) state.attached.delete(piece.id);
@@ -283,7 +284,7 @@ const together = (piece: Spec & { id: string }): Spec[] => (state.attached.has(p
 function specOf(itemId: string, start: number, end: number): Spec | null {
   const item = texts.get(itemId);
   const text = item?.text.slice(start, end) ?? "";
-  return item && text.trim() ? { sessionId: item.sessionId, itemId, start, end, text, kind: item.kind, where: placeOf(item.sessionId) } : null;
+  return item && text.trim() ? { sessionId: item.sessionId, itemId, start, end, text, kind: item.kind, where: placeOf(item.sessionId), ...(leftIds.has(itemId) ? { left: true } : {}) } : null;
 }
 
 /** Put a piece in the basket, once; the id it is kept under. */
@@ -299,8 +300,9 @@ function keep(spec: Spec): string {
 // A carried piece landed: it is kept, attached to what is said next, and the pane goes to where that is written:
 // the talk of the session it landed on, or the beginning of a new session.
 onLanding((drop, specs) => {
-  // a session is not sent its own words back: of several pieces, the ones that came out of it stay behind
-  const going = "fresh" in drop ? specs : specs.filter((spec) => home(spec.sessionId) !== drop.session);
+  // a session is not sent its own words back: of several pieces, the ones that came out of it stay behind (what it
+  // said and then left behind it has no more, and is sent like another session's)
+  const going = "fresh" in drop ? specs : specs.filter((spec) => spec.left || home(spec.sessionId) !== drop.session);
   state.attached = new Set(going.map(keep));
   keepBasket();
   document.getSelection()?.removeAllRanges();
@@ -542,11 +544,10 @@ function bubble(item: Said, who: "user" | "agent"): HTMLElement {
   return made;
 }
 
-/** What the agent did between a request and its answer: folded, and filled in only when opened.
- *  bare: of a stretch that was taken back, where nothing is to be found again or kept as a piece. */
-function work(items: Said[], bare = false): HTMLDetailsElement {
+/** What the agent did between a request and its answer: folded, and filled in only when opened. */
+function work(items: Said[]): HTMLDetailsElement {
   const box = h("details", "work");
-  if (!bare) box.dataset.items = items.map((item) => item.id).join(" ");
+  box.dataset.items = items.map((item) => item.id).join(" ");
   const answers = items.filter((item) => item.kind === "answer").length;
   const files = [...new Set(items.filter((item) => item.kind === "change").map((item) => (item.path ?? "").split("/").pop()!))].filter(Boolean);
   const parts: string[] = [];
@@ -560,7 +561,7 @@ function work(items: Said[], bare = false): HTMLDetailsElement {
     box.dataset.full = "1";
     for (const item of items) {
       const row = h("div", "work-item " + item.kind);
-      if (!bare) row.dataset.item = item.id;
+      row.dataset.item = item.id;
       if (item.kind === "change") row.append(h("div", "work-path", item.path ?? ""));
       const body = h("div", "");
       body.append(run(item.text, 0));
@@ -572,23 +573,36 @@ function work(items: Said[], bare = false): HTMLDetailsElement {
   return box;
 }
 
-/** Something said in a stretch that was taken back: its words, and nothing to do with them. */
+/** Something said in a stretch that was taken back: its words, from which a piece can be kept like from any others.
+ *  It is not said again from here: it is not of the talk. */
 function was(item: Said): HTMLElement {
   const who = item.kind === "prompt" ? "user" : "agent";
   const made = h("div", "msg was " + who);
+  made.dataset.item = item.id;
   const text = h("div", "text");
   const put = (body: string) => {
     text.textContent = "";
     if (who === "agent") rich(text, body);
-    else text.append(typedPart(body) || "(조각만 보냄)");
+    else if (typedPart(body)) text.append(run(typedPart(body), 0));
+    else text.append("(조각만 보냄)");
   };
   put(item.text);
   made.append(text);
   if (item.images) made.append(h("div", "was-with", "그림 " + item.images + "장이 함께 갔습니다"));
+  const acts = h("div", "acts");
+  const grab = h("button", "grab", "담기");
+  grab.title = "누르면 이 말 전체를 조각으로 담습니다. 지금 대화에는 없는 말이라, 다른 세션은 물론 이 세션에도 다시 보낼 수 있습니다. 일부만 담으려면 글을 끌어서 고르세요";
+  const whole = () => (who === "user" ? typedPart(texts.get(item.id)?.text ?? item.text).length : (texts.get(item.id)?.text ?? item.text).length);
+  grab.onclick = () => hold(item.id, 0, whole());
+  carries(grab, () => { const spec = specOf(item.id, 0, whole()); return spec ? [spec] : []; });
+  acts.append(grab);
+  made.append(acts);
   if (item.more) {
     const more = h("button", "more", "전체 보기 (" + (item.text.length + item.more).toLocaleString() + "자)");
     more.onclick = async () => {
-      put((await call<Item>("/api/item?id=" + encodeURIComponent(item.id))).text);
+      const all = await call<Item>("/api/item?id=" + encodeURIComponent(item.id));
+      texts.set(item.id, all);
+      put(all.text);
       more.remove();
     };
     made.append(more);
@@ -597,10 +611,11 @@ function was(item: Said): HTMLElement {
 }
 
 /** A stretch of the talk that was said and then taken back: a request of it was said again in another way, or the
- *  talk was taken back to before it. It is folded where it was said, and filled in only when opened. It is shown and
- *  no more: nothing in it is kept as a piece or said again, since the agent no longer has it. */
+ *  talk was taken back to before it. It is folded where it was said, and filled in only when opened. The agent no
+ *  longer has it, so nothing in it is said again; a piece can be kept from it and sent on, to this session too. */
 function goneFold(session: Session, stretch: Left): HTMLDetailsElement {
   const box = h("details", "gone");
+  box.dataset.items = stretch.items.map((item) => item.id).join(" ");
   const asks = stretch.items.filter((item) => item.kind === "prompt");
   const answers = stretch.items.filter((item) => item.kind === "answer" && item.final).length;
   const edited = session.client === "codex";
@@ -616,10 +631,10 @@ function goneFold(session: Session, stretch: Left): HTMLDetailsElement {
     if (!box.open || box.dataset.full) return;
     box.dataset.full = "1";
     const inside = h("div", "gone-body");
-    inside.append(h("p", "gone-note", (edited ? "Codex 앱에서 요청을 고쳐 다시 보내기 전에 오간 말입니다. " : "Claude Code에서 대화를 되감기 전에 오간 말입니다. ") + "지금 대화에는 들어 있지 않아서 에이전트는 이 말을 기억하지 못하고, 연결과 역추적에도 들어가지 않습니다."));
+    inside.append(h("p", "gone-note", (edited ? "Codex 앱에서 요청을 고쳐 다시 보내기 전에 오간 말입니다. " : "Claude Code에서 대화를 되감기 전에 오간 말입니다. ") + "지금 대화에는 들어 있지 않아서 에이전트는 이 말을 기억하지 못합니다. 쓸 만한 것은 조각으로 담아 다른 세션이나 이 세션에 다시 보낼 수 있습니다."));
     let pending: Said[] = [];
     const flush = () => {
-      if (pending.length) inside.append(work(pending, true));
+      if (pending.length) inside.append(work(pending));
       pending = [];
     };
     for (const item of stretch.items) {
@@ -638,6 +653,8 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
   body.textContent = "";
   texts.clear();
   for (const item of items) texts.set(item.id, item);
+  leftIds.clear();
+  for (const one of left) for (const item of one.items) { texts.set(item.id, item); leftIds.add(item.id); }
   let from = all || items.length <= LAST ? 0 : items.length - LAST;
   while (from > 0 && from < items.length && items[from].kind !== "prompt") from += 1; // start at a request, not in the middle of a turn
   if (focus && items.findIndex((item) => item.id === focus) < from) from = 0;
@@ -711,6 +728,15 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
   if (!items.length) body.append(h("div", "stamp none-yet", "아직 주고받은 말이 없습니다"));
   if (trouble.id === session.id) body.append(h("div", "turn-error", trouble.text));
   let target = focus ? body.querySelector<HTMLElement>('[data-item="' + CSS.escape(focus) + '"]') : null;
+  if (focus && !target) {
+    // the item is in what was left behind: that is filled in first, and then looked through like the rest
+    const behind = [...body.querySelectorAll<HTMLDetailsElement>("details.gone")].find((one) => (one.dataset.items ?? "").split(" ").includes(focus));
+    if (behind) {
+      behind.open = true;
+      behind.dispatchEvent(new Event("toggle"));
+      target = behind.querySelector<HTMLElement>('[data-item="' + CSS.escape(focus) + '"]');
+    }
+  }
   if (focus && !target) {
     // the item is inside a folded stretch of work: open that stretch
     const fold = [...body.querySelectorAll<HTMLDetailsElement>("details.work")].find((one) => (one.dataset.items ?? "").split(" ").includes(focus));
@@ -1629,6 +1655,9 @@ function drawContext(session: Session) {
   const given = state.graph.flows.filter((flow) => flow.from === session.id).flatMap((flow) => flow.links);
   section(box, "이 세션이 받은 것", taken.length, "다른 세션에서 온 것이 없습니다.", taken.map((link) => linkCard(link, "from")));
   section(box, "이 세션이 준 것", given.length, "다른 세션으로 간 것이 없습니다.", given.map((link) => linkCard(link, "to")));
+  // a piece of what this session said and then left behind, sent back into it: no line on the map (it is one tile), so it is listed here
+  const again = (state.snap?.links ?? []).filter((link) => link.kind === "transfer" && link.from.sessionId === session.id && link.to.sessionId === session.id);
+  if (again.length) section(box, "버려진 말에서 되가져온 것", again.length, "", again.map((link) => linkCard(link, "both")));
   // what went between this session and sessions of other projects: no line on this map, since the other end is not on it
   const far = farOf(session.id);
   if (far.length) section(box, "다른 프로젝트와 주고받은 것", far.length, "", far.map(farCard));
@@ -1719,7 +1748,10 @@ export function drawTrace() {
   const heads = new Map(state.snap!.items.map((item) => [item.id, item]));
   const where = (itemId?: string) => {
     const item = itemId ? heads.get(itemId) : undefined;
-    return item ? KIND[item.kind] + (item.kind === "change" && item.path ? " · " + item.path.split("/").pop() : "") : "";
+    if (item) return KIND[item.kind] + (item.kind === "change" && item.path ? " · " + item.path.split("/").pop() : "");
+    // a stop in what its session said and then left behind: it is in no snapshot, and the way says what it is
+    const behind = itemId ? trace.left?.[itemId] : undefined;
+    return behind ? KIND[behind.kind] + " · 고치거나 되감기 전의 말" : "";
   };
   /** far: the stop is a session of a project that is not on the map. The way ends there for now: a press puts that
    *  project on the map and follows the piece again, on through it. */
@@ -1762,7 +1794,7 @@ export function drawTrace() {
     list.append(stop(link.from.sessionId, link.from.itemId, link.from.at, carried(link), fromSpan(link), (at === 0 ? "처음 나온 곳 · " : "") + where(link.from.itemId), 0, false, step.far), hop(step));
   });
   const self = state.sessions.get(trace.piece.sessionId);
-  list.append(stop(trace.piece.sessionId, trace.piece.itemId, heads.get(trace.piece.itemId)?.at ?? self?.updatedAt ?? 0, trace.text, { start: trace.piece.start, end: trace.piece.end }, "따라가는 조각 · " + where(trace.piece.itemId), 0, true));
+  list.append(stop(trace.piece.sessionId, trace.piece.itemId, heads.get(trace.piece.itemId)?.at ?? trace.left?.[trace.piece.itemId]?.at ?? self?.updatedAt ?? 0, trace.text, { start: trace.piece.start, end: trace.piece.end }, "따라가는 조각 · " + where(trace.piece.itemId), 0, true));
   for (const step of onward) {
     const link = step.link;
     // each place it went hangs, set in, under the place it went from: several under one are several ways out of it
@@ -2088,7 +2120,7 @@ export async function drawChat(id: string, focus?: string, quiet = false, span?:
     if (state.open !== id) return;
     left = gone ?? [];
     // a very long item comes cut short; when the stretch to be marked lies beyond the cut, the whole of it is read
-    const wanted = focus && span ? items.find((item) => item.id === focus) : undefined;
+    const wanted = focus && span ? items.find((item) => item.id === focus) ?? left.flatMap((one) => one.items).find((item) => item.id === focus) : undefined;
     if (wanted?.more && Math.max(span!.end, ...(span!.parts ?? []).map((part) => part[1])) > wanted.text.length) {
       const whole = await call<Item>("/api/item?id=" + encodeURIComponent(wanted.id)).catch(() => null);
       if (whole) { wanted.text = whole.text; delete wanted.more; }

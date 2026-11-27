@@ -20,7 +20,14 @@ export const MINUTE = 60_000;
 export interface Flow { from: string; to: string; links: Link[]; waiting: Waiting[]; at: number }
 /** A piece kept in the basket, to be sent along with a message. where (of Piece): the session it came from, said in
  *  full, so that it can be shown and sent while another project is on the screen. */
-export interface Held extends Piece { id: string; text: string; kind: ItemKind; at: number }
+export interface Held extends Piece {
+  id: string;
+  text: string;
+  kind: ItemKind;
+  at: number;
+  /** Cut from what its session said and then left behind: the session has it no more, and can be sent it like any other. */
+  left?: boolean;
+}
 /** Two sessions that changed the same files. Not a flow: it does not say context moved. */
 export interface Share { a: string; b: string; files: string[] }
 export interface Graph {
@@ -35,7 +42,8 @@ export interface Graph {
 /** A stretch of an item's text to be marked on the page; parts: the several stretches of it that count (the grounds of a paste). */
 export interface Span { start: number; end: number; parts?: [number, number][] }
 /** A piece being followed: where it came from and where it went. shown: the pane shows the way now, not a talk. */
-export interface Trace { piece: Piece; text: string; steps: TraceStep[]; shown: boolean }
+/** left: the stops of the way that lie in what a session said and then left behind: what each is, and when it was said. */
+export interface Trace { piece: Piece; text: string; steps: TraceStep[]; shown: boolean; left?: Record<string, { kind: ItemKind; at: number }> }
 
 /** A place in a session's talk where the words being looked for were said. */
 export interface Hit { id: string; sessionId: string; kind: "prompt" | "answer"; at: number; before: string; match: string; after: string }
