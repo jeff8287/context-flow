@@ -23,7 +23,8 @@ import { listModels, startFork, startNew, startTurn, type Along, type Turn } fro
 import { oneLine } from "./util.ts";
 import { grown, Interest, watchRecords, type Changed } from "./watch.ts";
 
-const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json" };
+const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json",
+  ".png": "image/png", ".webmanifest": "application/manifest+json; charset=utf-8" }; // the last two: what makes the screen an app (its icons, and what it says of itself)
 
 async function body(request: IncomingMessage): Promise<Record<string, unknown>> {
   let text = "";

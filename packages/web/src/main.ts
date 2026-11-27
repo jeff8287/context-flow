@@ -281,7 +281,13 @@ function shortPath(path: string): string {
   return home.length > 34 ? "…" + home.slice(-33) : home;
 }
 /** The address follows what is on the map, so that loading the page again comes back to it. */
-const address = () => history.replaceState(null, "", "?project=" + chosen.map(encodeURIComponent).join(","));
+const address = () => {
+  history.replaceState(null, "", "?project=" + chosen.map(encodeURIComponent).join(","));
+  remember();
+};
+/** Which projects are on the map, kept for the next time the screen is opened without being told (as an app is). */
+const remember = () => { try { localStorage.setItem("cf-last", chosen.join(",")); } catch { /* storage may be shut off */ } };
+const remembered = () => { try { return localStorage.getItem("cf-last") ?? ""; } catch { return ""; } };
 
 /** The button that says which projects are on the map, and the list they are chosen from. A press on a name shows
  *  that project alone; a press on the box before it puts it on the map beside what is there, or takes it off. */
@@ -567,6 +573,13 @@ function announce(list: Notice[]) {
   if (!unseen) return;
   if (!plainTitle) plainTitle = document.title;
   document.title = "(" + unseen + ") " + plainTitle;
+  void badge(unseen);
+}
+
+/** The count on the app's icon in the Dock, when the screen is installed as an app (elsewhere there is no such thing). */
+function badge(count: number) {
+  const dock = navigator as Navigator & { setAppBadge?: (count?: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
+  return (count ? dock.setAppBadge?.(count) : dock.clearAppBadge?.())?.catch(() => {});
 }
 
 /** The person is looking again: the count in the title has done its work, and the cards kept for them begin their time. */
@@ -576,6 +589,7 @@ function seen() {
     unseen = 0;
     document.title = plainTitle;
     plainTitle = "";
+    void badge(0);
   }
   document.querySelectorAll<HTMLElement>("#toasts .toast[data-kept]").forEach((made) => {
     delete made.dataset.kept;
@@ -625,6 +639,51 @@ function theme(next?: "light" | "dark") {
     else wanted = (localStorage.getItem("cf-theme") as "light" | "dark" | null) ?? undefined;
   } catch { /* storage may be shut off; the choice then lasts for this page only */ }
   document.documentElement.dataset.theme = wanted ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  frame();
+}
+/** The bar over the app's own window takes the colour of what lies under it. */
+function frame() {
+  const side = getComputedStyle(document.documentElement).getPropertyValue("--side").trim();
+  if (side) document.querySelector('meta[name="theme-color"]')?.setAttribute("content", side);
+}
+
+/** The screen as an app: a window of its own with an icon in the Dock, made by the browser from what the page says
+ *  of itself (manifest.webmanifest). Chrome and Edge let the page offer it; Safari has it in its own menu. While the
+ *  server is not up, a page kept by sw.js says so in that window, since it has no address bar to say it. */
+function wireApp(close: () => void) {
+  const button = el<HTMLElement>("install");
+  const menu = el<HTMLElement>("install-menu");
+  const how = el<HTMLElement>("install-how");
+  if (state.bundle || state.alone || !location.protocol.startsWith("http")) return; // an exported record is a file: there is no server to be an app of
+  if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/sw.js").catch(() => {});
+  const own = () => matchMedia("(display-mode: standalone)").matches || matchMedia("(display-mode: minimal-ui)").matches;
+  button.innerHTML = ICON.install;
+  menu.onclick = (event) => event.stopPropagation();
+  // Chrome and Edge say when the page can be installed, and hand over the question to put to the person
+  let offer: (Event & { prompt: () => Promise<unknown>; userChoice?: Promise<{ outcome: string }> }) | null = null;
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault(); // the browser's own bar is not shown: the button in the page asks
+    offer = event as typeof offer;
+    button.hidden = own();
+  });
+  window.addEventListener("appinstalled", () => { offer = null; button.hidden = true; menu.hidden = true; });
+  // Safari makes an app of any page from its menu, and tells the page nothing of it
+  const safari = /Safari\//.test(navigator.userAgent) && !/Chrom(e|ium)\/|Edg\/|OPR\/|Firefox\//.test(navigator.userAgent);
+  if (safari && !own()) button.hidden = false;
+  button.onclick = async (event) => {
+    event.stopPropagation();
+    if (offer) {
+      const asked = offer;
+      await asked.prompt().catch(() => {});
+      const chose = await asked.userChoice?.catch(() => null);
+      if (chose?.outcome === "accepted") { offer = null; button.hidden = true; }
+      return;
+    }
+    const shown = !menu.hidden;
+    close();
+    how.innerHTML = "Safari의 메뉴 막대에서 <b>파일 → Dock에 추가…</b>를 고릅니다. Dock에 아이콘이 생기고, 누르면 주소창 없는 제 창으로 열립니다.";
+    menu.hidden = shown;
+  };
 }
 
 (async function start() {
@@ -685,12 +744,14 @@ function theme(next?: "light" | "dark") {
   // exporting, and opening what was exported
   const menu = el<HTMLElement>("io-menu");
   const bells = el<HTMLElement>("notify-menu");
-  el<HTMLElement>("io").onclick = (event) => { event.stopPropagation(); picker.hidden = true; bells.hidden = true; menu.hidden = !menu.hidden; };
-  el<HTMLElement>("notify").onclick = (event) => { event.stopPropagation(); picker.hidden = true; menu.hidden = true; bells.hidden = !bells.hidden; };
+  const app = el<HTMLElement>("install-menu");
+  el<HTMLElement>("io").onclick = (event) => { event.stopPropagation(); picker.hidden = true; bells.hidden = true; app.hidden = true; menu.hidden = !menu.hidden; };
+  el<HTMLElement>("notify").onclick = (event) => { event.stopPropagation(); picker.hidden = true; menu.hidden = true; app.hidden = true; bells.hidden = !bells.hidden; };
   bells.onclick = (event) => event.stopPropagation();
   wireBell();
+  wireApp(() => { menu.hidden = true; picker.hidden = true; bells.hidden = true; });
   menu.onclick = (event) => event.stopPropagation();
-  document.addEventListener("click", () => { menu.hidden = true; picker.hidden = true; bells.hidden = true; });
+  document.addEventListener("click", () => { menu.hidden = true; picker.hidden = true; bells.hidden = true; app.hidden = true; });
   // whether the name of this machine's user is covered in what is exported, and which words besides: kept for the next time
   const mask = el<HTMLInputElement>("mask");
   const words = el<HTMLInputElement>("mask-words");
@@ -756,7 +817,7 @@ function theme(next?: "light" | "dark") {
   const open = async () => {
     const { projects } = await call<{ projects: Project[] }>("/api/projects");
     state.projects = projects;
-    const wanted = new URLSearchParams(location.search).get("project") ?? "";
+    const wanted = new URLSearchParams(location.search).get("project") ?? remembered();
     const named = (name: string) => projects.find((one) => one.id === name || one.name === name || one.roots.includes(name));
     const whole = named(wanted);
     const asked = whole ? [whole] : [...new Set(wanted.split(",").map((part) => named(part.trim())).filter((one): one is Project => Boolean(one)))];
@@ -765,6 +826,7 @@ function theme(next?: "light" | "dark") {
     chosen = first.map((one) => one.id);
     drawPicker();
     await load(chosen.join(","));
+    remember();
   };
   for (;;) {
     try {
@@ -779,7 +841,7 @@ function theme(next?: "light" | "dark") {
   window.addEventListener("resize", () => { clearTimeout(timer); timer = window.setTimeout(render, 120); });
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (!menu.hidden || !picker.hidden || !bells.hidden) { menu.hidden = true; picker.hidden = true; bells.hidden = true; }
+    if (!menu.hidden || !picker.hidden || !bells.hidden || !app.hidden) { menu.hidden = true; picker.hidden = true; bells.hidden = true; app.hidden = true; }
     else if (state.open || state.edge || state.trace || state.fresh) closeChat();
   });
   // What is at work changes while the page is open. The server says when the records change (listen, above); what no

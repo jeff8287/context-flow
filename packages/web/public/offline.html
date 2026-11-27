@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>맥락 흐름 · 서버가 꺼져 있습니다</title>
+<style>
+  :root { color-scheme: light dark; --board: #F2F3F6; --surface: #FFFFFF; --ink: #14161B; --muted: #596070; --edge: #E2E5EB; --code: #EEF0F4; --live: #12A150; }
+  @media (prefers-color-scheme: dark) { :root { --board: #14161B; --surface: #21252D; --ink: #F2F4F7; --muted: #AAB1BE; --edge: #2F343E; --code: #272C35; --live: #3DD68C; } }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--board); color: var(--ink); font: 14.5px/1.6 "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif; -webkit-font-smoothing: antialiased; word-break: keep-all; }
+  body { display: grid; place-items: center; min-height: 100vh; padding: 32px 20px; }
+  main { width: 100%; max-width: 560px; padding: 30px 32px 26px; border: 1px solid var(--edge); border-radius: 16px; background: var(--surface); }
+  svg { display: block; width: 52px; height: 52px; margin-bottom: 18px; }
+  h1 { margin: 0 0 8px; font-size: 21px; letter-spacing: -.02em; }
+  p { margin: 0 0 16px; color: var(--muted); }
+  p b { color: var(--ink); }
+  ol { margin: 0 0 20px; padding: 0; list-style: none; border-top: 1px solid var(--edge); }
+  li { padding: 12px 0; border-bottom: 1px solid var(--edge); color: var(--muted); }
+  li b { display: block; margin-bottom: 2px; color: var(--ink); font-weight: 650; }
+  code { padding: 2px 6px; border-radius: 5px; background: var(--code); color: var(--ink); font: 12.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: nowrap; }
+  .state { display: flex; align-items: center; gap: 9px; margin: 0; }
+  .state i { width: 8px; height: 8px; border-radius: 50%; background: var(--live); animation: beat 1.4s ease-in-out infinite; }
+  @keyframes beat { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .state i { animation: none; } }
+  button { margin-left: auto; height: 30px; padding: 0 14px; border: 1px solid var(--ink); border-radius: 15px; background: var(--ink); color: var(--surface); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <svg viewBox="0 0 512 512" aria-hidden="true"><rect width="512" height="512" rx="114" fill="#14161B"/><path d="M232 164 C 272 164, 256 240, 296 240" fill="none" stroke="#3FB86A" stroke-width="15" stroke-linecap="round"/><path d="M232 348 C 272 348, 256 272, 296 272" fill="none" stroke="#F0619E" stroke-width="15" stroke-linecap="round" stroke-dasharray="4 26"/><rect x="92" y="120" width="140" height="88" rx="22" fill="#3FB86A"/><rect x="92" y="304" width="140" height="88" rx="22" fill="#F0619E"/><rect x="296" y="212" width="140" height="88" rx="22" fill="#F4F5F8"/></svg>
+  <h1>서버가 꺼져 있습니다</h1>
+  <p><b id="where">이 주소</b>에서 답이 없습니다. 맥락 흐름의 화면은 이 컴퓨터에서 도는 서버가 내줍니다. 서버가 뜨면 이 창이 저절로 이어집니다.</p>
+  <ol>
+    <li><b>늘 띄워 두도록 설치했다면</b>저장소 폴더에서 <code>npm run service -- status</code>로 상태를 보고 <code>npm run service -- restart</code>로 다시 띄웁니다.</li>
+    <li><b>아직 설치하지 않았다면</b>저장소 폴더에서 <code>npm run service -- install</code>을 한 번 돌리면 로그인할 때마다 저절로 뜹니다. 이번만 띄우려면 <code>npm run serve</code>입니다.</li>
+    <li><b>데모를 보던 중이었다면</b><code>npm run demo</code>를 다시 돌립니다.</li>
+  </ol>
+  <p class="state" role="status"><i></i><span id="state">다시 잇는 중입니다</span><button id="now" type="button">지금 다시</button></p>
+</main>
+<script>
+  // This page asks the server one thing: whether it is back. When it is, the address that was asked for is asked for again.
+  document.getElementById("where").textContent = location.host;
+  let asking = false;
+  async function ask() {
+    if (asking) return;
+    asking = true;
+    try {
+      const got = await fetch("/api/projects", { cache: "no-store" });
+      if (got.ok) return location.reload();
+    } catch { /* still down */ }
+    asking = false;
+  }
+  document.getElementById("now").onclick = ask;
+  setInterval(ask, 2500);
+  addEventListener("online", ask);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") ask(); });
+</script>
+</body>
+</html>
