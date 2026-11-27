@@ -186,6 +186,10 @@ export interface Rollout {
   base: { thread: string; file: string; end: number } | null;
   /** The files the thread's own talk lies in, the oldest first; of all but the last, only what lies before end. */
   files: { path: string; end?: number }[];
+  /** What was said in the thread and is of its talk no more, a stretch at a time: what lies in one of those files
+   *  after end (the request there was said again), and what lies in a file of the thread that is not among them
+   *  (its first request was said again, and the talk was begun anew). */
+  gone: Item[][];
   /** A turn was started and the record does not say it ended. */
   open: boolean;
   /** When the last turn was started. */
@@ -199,10 +203,12 @@ export interface RecordFiles {
   fileOf(own: string): { thread: string; path: string } | null;
   /** Which of its thread's files it is, counted from the oldest (0); -1 when that is not known. */
   seqOf(path: string): number;
+  /** The files of a thread that are known by their names, the oldest first. */
+  filesOf(thread: string): string[];
 }
 
 const NAMED = /rollout-(?:(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-)?([0-9a-f]{8}-[0-9a-f-]{27})(?:_([0-9a-f]{8}-[0-9a-f-]{27}))?\.jsonl$/;
-const indexes = new Map<string, { at: number; byOwn: Map<string, { thread: string; path: string }>; seq: Map<string, number> }>();
+const indexes = new Map<string, { at: number; byOwn: Map<string, { thread: string; path: string }>; seq: Map<string, number>; ofThread: Map<string, string[]> }>();
 /** What was asked for and not found, for each place the files are kept in. */
 const missing = new Map<string, Set<string>>();
 
@@ -237,11 +243,13 @@ export function recordFiles(home = codexHome()): RecordFiles {
     walk(join(home, "sessions"), 0);
     walk(join(home, "archived_sessions"), 0);
     const seq = new Map<string, number>();
-    for (const list of byThread.values()) {
+    const ofThread = new Map<string, string[]>();
+    for (const [thread, list] of byThread) {
       list.sort((a, b) => (a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : a.path < b.path ? -1 : 1));
       list.forEach((one, at) => seq.set(one.path, at));
+      ofThread.set(thread, list.map((one) => one.path));
     }
-    const made = { at: Date.now(), byOwn, seq };
+    const made = { at: Date.now(), byOwn, seq, ofThread };
     indexes.set(home, made);
     return made;
   };
@@ -267,6 +275,9 @@ export function recordFiles(home = codexHome()): RecordFiles {
     seqOf(path) {
       return find("file " + path, (index) => index.seq.get(path)) ?? -1;
     },
+    filesOf(thread) {
+      return have().ofThread.get(thread) ?? [];
+    },
   };
 }
 
@@ -284,6 +295,8 @@ interface Part {
 const cache = new Map<string, { size: number; mtime: number; rollout: Part }>();
 /** A file's beginning, read as far as a place in it: what lies before a place in a record does not change. */
 const prefixes = new Map<string, Part>();
+/** A file's end, read from a place in it on. */
+const tails = new Map<string, { size: number; mtime: number; rollout: Part }>();
 const made = new WeakMap<Part, Rollout>();
 
 /** What one thread said and changed. Each file is read once, and again only when it has grown. */
@@ -296,8 +309,10 @@ export async function readRollout(sessionId: string, path: string, files: Record
   const own: { part: Part; path: string; end?: number }[] = [{ part: top, path }];
   let base: Rollout["base"] = null;
   let forkedFrom = top.forkedFrom;
+  let whole = true; // the way was followed to its beginning
   for (let from = top, guard = 0; from.base && guard < 24; guard += 1) {
     const file = files.fileOf(from.base.id);
+    whole = Boolean(file);
     if (!file) break; // the file it names is gone: what lay in it is not known
     if (file.thread !== sessionId) {
       base = { thread: file.thread, file: file.path, end: from.base.end };
@@ -305,6 +320,7 @@ export async function readRollout(sessionId: string, path: string, files: Record
       break;
     }
     const before = await readPart(sessionId, file.path, from.base.end);
+    whole = Boolean(before);
     if (!before) break;
     own.unshift({ part: before, path: file.path, end: from.base.end });
     forkedFrom ??= before.forkedFrom;
@@ -317,7 +333,26 @@ export async function readRollout(sessionId: string, path: string, files: Record
   const known = seqs.every((seq) => seq >= 0);
   const items = own.length === 1 && !(seqs[0] > 0) ? top.items
     : own.flatMap((one, at) => one.part.items.map((item, n) => ({ ...item, id: sessionId + ":" + ((known ? seqs[at] : at) * 1_000_000 + n) })));
-  const rollout: Rollout = { items, forkedFrom, base, files: own.map(({ path: file, end }) => ({ path: file, ...(end === undefined ? {} : { end }) })), open: top.open, openAt: top.openAt, lastAt: top.lastAt };
+  // What was said and then left behind keeps the numbers it had, by the same rule. A file of the thread that is not
+  // on the way and is newer than the one the list of threads names is not read: the list may be a moment behind.
+  // Nor is any file off the way when the way could not be followed to its beginning: it may be the talk's own past.
+  const gone: Item[][] = [];
+  if (known) {
+    const numbered = (seq: number, from: number, list: Item[]) => list.map((item, n) => ({ ...item, id: sessionId + ":" + (seq * 1_000_000 + from + n) }));
+    for (const [at, one] of own.entries()) {
+      if (one.end === undefined) continue;
+      const after = await readPart(sessionId, one.path, undefined, one.end);
+      if (after?.items.length) gone.push(numbered(seqs[at], one.part.items.length, after.items));
+    }
+    const way = new Set(own.map((one) => one.path));
+    for (const other of whole ? files.filesOf(sessionId) : []) {
+      const seq = files.seqOf(other);
+      if (way.has(other) || seq < 0 || seq > seqs[seqs.length - 1]) continue;
+      const all = await readPart(sessionId, other);
+      if (all?.items.length) gone.push(numbered(seq, 0, all.items));
+    }
+  }
+  const rollout: Rollout = { items, forkedFrom, base, files: own.map(({ path: file, end }) => ({ path: file, ...(end === undefined ? {} : { end }) })), gone, open: top.open, openAt: top.openAt, lastAt: top.lastAt };
   made.set(top, rollout);
   return rollout;
 }
@@ -327,20 +362,20 @@ export async function ownRecords(sessionId: string, path: string): Promise<strin
   return ((await readRollout(sessionId, path))?.files ?? [{ path }]).map((one) => one.path).reverse();
 }
 
-/** One record file, or (end) its beginning as far as that place. */
-async function readPart(sessionId: string, path: string, end?: number): Promise<Part | null> {
+/** One record file; or (end) its beginning as far as that place; or (start) what lies in it from that place on. */
+async function readPart(sessionId: string, path: string, end?: number, start = 0): Promise<Part | null> {
   let stat;
   try {
     stat = statSync(path);
   } catch {
     return null;
   }
-  const key = path + "@" + end;
+  const key = path + "@" + end + "+" + start;
   if (end !== undefined) {
     const before = prefixes.get(key);
     if (before) return before;
   }
-  const kept = end === undefined ? cache.get(path) : undefined;
+  const kept = end !== undefined ? undefined : start ? tails.get(key) : cache.get(path);
   if (kept && kept.size === stat.size && kept.mtime === stat.mtimeMs) return kept.rollout;
   const rollout: Part = { items: [], forkedFrom: null, base: null, open: false, openAt: 0, lastAt: 0 };
   // Older threads, and copies of Claude Code sessions, keep what was said as user_message and agent_message events.
@@ -350,7 +385,7 @@ async function readPart(sessionId: string, path: string, end?: number): Promise<
   const hooked: { turnId: string | null; text: string; seen: number; seenOlder: number }[] = [];
   const marked = JSON.stringify(PIECE_MARK).slice(1, -1); // the mark as it stands inside a line of JSON
   if (end === 0) return rollout; // nothing of the file is before its beginning
-  const lines = createInterface({ input: createReadStream(path, { encoding: "utf8", ...(end === undefined ? {} : { end: end - 1 }) }), crlfDelay: Infinity });
+  const lines = createInterface({ input: createReadStream(path, { encoding: "utf8", ...(start ? { start } : {}), ...(end === undefined ? {} : { end: end - 1 }) }), crlfDelay: Infinity });
   for await (const line of lines) {
     // Most of a rollout is model requests and tool output; only a few kinds of line matter here.
     const head = line.slice(0, 400);
@@ -432,8 +467,9 @@ async function readPart(sessionId: string, path: string, end?: number): Promise<
     const target = (one.turnId ? prompts.findLast((item) => item.turnId === one.turnId) : undefined) ?? before.findLast((item) => item.kind === "prompt") ?? prompts[0];
     if (target) target.added = target.added ? target.added + "\n\n" + one.text : one.text;
   }
-  if (end === undefined) cache.set(path, { size: stat.size, mtime: stat.mtimeMs, rollout });
-  else prefixes.set(key, rollout);
+  if (end !== undefined) prefixes.set(key, rollout);
+  else if (start) tails.set(key, { size: stat.size, mtime: stat.mtimeMs, rollout });
+  else cache.set(path, { size: stat.size, mtime: stat.mtimeMs, rollout });
   return rollout;
 }
 

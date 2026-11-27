@@ -34,6 +34,10 @@ let redo: { session: string; item: string; draft: string; attached: string[]; pi
 let forking = "";
 /** Each item now on the page, by its id: a piece is cut from its text. */
 const texts = new Map<string, Said>();
+/** A stretch of the open talk that was said and then taken back, and the request it is shown before. */
+interface Left { before: string | null; items: Said[] }
+/** Those of the talk that is open. */
+let left: Left[] = [];
 /** The stretch of text now selected, if it can be kept as a piece. */
 let chosen: { itemId: string; start: number; end: number } | null = null;
 let wired = false;
@@ -538,10 +542,11 @@ function bubble(item: Said, who: "user" | "agent"): HTMLElement {
   return made;
 }
 
-/** What the agent did between a request and its answer: folded, and filled in only when opened. */
-function work(items: Said[]): HTMLDetailsElement {
+/** What the agent did between a request and its answer: folded, and filled in only when opened.
+ *  bare: of a stretch that was taken back, where nothing is to be found again or kept as a piece. */
+function work(items: Said[], bare = false): HTMLDetailsElement {
   const box = h("details", "work");
-  box.dataset.items = items.map((item) => item.id).join(" ");
+  if (!bare) box.dataset.items = items.map((item) => item.id).join(" ");
   const answers = items.filter((item) => item.kind === "answer").length;
   const files = [...new Set(items.filter((item) => item.kind === "change").map((item) => (item.path ?? "").split("/").pop()!))].filter(Boolean);
   const parts: string[] = [];
@@ -555,7 +560,7 @@ function work(items: Said[]): HTMLDetailsElement {
     box.dataset.full = "1";
     for (const item of items) {
       const row = h("div", "work-item " + item.kind);
-      row.dataset.item = item.id;
+      if (!bare) row.dataset.item = item.id;
       if (item.kind === "change") row.append(h("div", "work-path", item.path ?? ""));
       const body = h("div", "");
       body.append(run(item.text, 0));
@@ -563,6 +568,68 @@ function work(items: Said[]): HTMLDetailsElement {
       row.append(body);
       box.append(row);
     }
+  });
+  return box;
+}
+
+/** Something said in a stretch that was taken back: its words, and nothing to do with them. */
+function was(item: Said): HTMLElement {
+  const who = item.kind === "prompt" ? "user" : "agent";
+  const made = h("div", "msg was " + who);
+  const text = h("div", "text");
+  const put = (body: string) => {
+    text.textContent = "";
+    if (who === "agent") rich(text, body);
+    else text.append(typedPart(body) || "(조각만 보냄)");
+  };
+  put(item.text);
+  made.append(text);
+  if (item.images) made.append(h("div", "was-with", "그림 " + item.images + "장이 함께 갔습니다"));
+  if (item.more) {
+    const more = h("button", "more", "전체 보기 (" + (item.text.length + item.more).toLocaleString() + "자)");
+    more.onclick = async () => {
+      put((await call<Item>("/api/item?id=" + encodeURIComponent(item.id))).text);
+      more.remove();
+    };
+    made.append(more);
+  }
+  return made;
+}
+
+/** A stretch of the talk that was said and then taken back: a request of it was said again in another way, or the
+ *  talk was taken back to before it. It is folded where it was said, and filled in only when opened. It is shown and
+ *  no more: nothing in it is kept as a piece or said again, since the agent no longer has it. */
+function goneFold(session: Session, stretch: Left): HTMLDetailsElement {
+  const box = h("details", "gone");
+  const asks = stretch.items.filter((item) => item.kind === "prompt");
+  const answers = stretch.items.filter((item) => item.kind === "answer" && item.final).length;
+  const edited = session.client === "codex";
+  const summary = h("summary", "");
+  const mark = h("i", "gone-mark");
+  mark.innerHTML = ICON.back;
+  const first = stretch.items[0];
+  summary.append(mark, h("b", "", edited ? "고치기 전의 대화" : "되감기 전의 대화"), h("span", "gone-count", "요청 " + asks.length + (answers ? " · 답 " + answers : "")),
+    h("span", "gone-said", flat(typedPart(asks[0]?.text ?? first.text), 80)), h("time", "", day(first.at) + " " + clock(first.at)));
+  summary.title = (edited ? "이 뒤의 요청을 고쳐 다시 보내기 전에 오간 말입니다." : "대화를 되감기 전에 오간 말입니다.") + " 누르면 펼칩니다";
+  box.append(summary);
+  box.addEventListener("toggle", () => {
+    if (!box.open || box.dataset.full) return;
+    box.dataset.full = "1";
+    const inside = h("div", "gone-body");
+    inside.append(h("p", "gone-note", (edited ? "Codex 앱에서 요청을 고쳐 다시 보내기 전에 오간 말입니다. " : "Claude Code에서 대화를 되감기 전에 오간 말입니다. ") + "지금 대화에는 들어 있지 않아서 에이전트는 이 말을 기억하지 못하고, 연결과 역추적에도 들어가지 않습니다."));
+    let pending: Said[] = [];
+    const flush = () => {
+      if (pending.length) inside.append(work(pending, true));
+      pending = [];
+    };
+    for (const item of stretch.items) {
+      if (item.kind === "prompt" || (item.kind === "answer" && item.final)) {
+        flush();
+        inside.append(was(item));
+      } else pending.push(item);
+    }
+    flush();
+    box.append(inside);
   });
   return box;
 }
@@ -600,7 +667,17 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
     if (pending.length) body.append(work(pending));
     pending = [];
   };
+  // what was said and then taken back, by the request it is shown before
+  const folds = new Map<string | null, Left[]>();
+  for (const one of left) folds.set(one.before, [...(folds.get(one.before) ?? []), one]);
+  const unfold = (before: string | null) => {
+    const here = folds.get(before);
+    if (!here) return;
+    flush();
+    body.append(...here.map((one) => goneFold(session, one)));
+  };
   for (const item of items.slice(from)) {
+    unfold(item.id);
     if (item.kind === "prompt") {
       flush();
       if (day(item.at) !== lastDay) body.append(h("div", "stamp", day(item.at) + " " + clock(item.at)));
@@ -616,6 +693,7 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
     } else pending.push(item);
   }
   flush();
+  unfold(null);
   // the answer to the last request can be asked for once more: the same request, said to a fork
   if (answered && session.activity !== "running" && top(session) && !state.bundle) {
     const { asked: request, at } = answered;
@@ -2006,8 +2084,9 @@ export async function drawChat(id: string, focus?: string, quiet = false, span?:
   have = { id, count };
   if (!same) body.replaceChildren(h("div", "stamp", "대화를 불러오는 중"));
   try {
-    const { items } = await call<{ items: Said[] }>("/api/talk?session=" + encodeURIComponent(id));
+    const { items, gone } = await call<{ items: Said[]; gone?: Left[] }>("/api/talk?session=" + encodeURIComponent(id));
     if (state.open !== id) return;
+    left = gone ?? [];
     // a very long item comes cut short; when the stretch to be marked lies beyond the cut, the whole of it is read
     const wanted = focus && span ? items.find((item) => item.id === focus) : undefined;
     if (wanted?.more && Math.max(span!.end, ...(span!.parts ?? []).map((part) => part[1])) > wanted.text.length) {

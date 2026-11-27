@@ -25,6 +25,8 @@ export interface Transcript {
   /** For a fork: the last request it was given when it was made (the id of that request's record, which is the
    *  same in the record of the session it was forked from). */
   forkKept?: string;
+  /** What was said in the session and then taken back (the talk no longer stands on it), a stretch at a time. */
+  gone?: Item[][];
   /** A request was made and the record does not say the answer to it ended. */
   open: boolean;
 }
@@ -113,6 +115,14 @@ function* wayBack(chain: Chain, from: number): Generator<number> {
 /** Where the last thing said in a talk is: its last request, answer or summary. */
 function lastSaid({ links }: Chain): number {
   return links.findLastIndex((one) => one.kind === "user" || one.kind === "assistant" || one.kind === "summary");
+}
+
+/** The request a record was said after, going back the way the talk came: the id of its record. */
+function askedBefore(chain: Chain, record: string): string | undefined {
+  const at = chain.place.get(record);
+  if (at === undefined) return undefined;
+  for (const back of wayBack(chain, before(chain, at))) if (chain.links[back].asked) return chain.links[back].uuid;
+  return undefined;
 }
 
 /** The records a talk stands on now: from the last thing said in it, back to its beginning. What a summary was made
@@ -227,14 +237,20 @@ async function readTranscript(path: string, id: string, parentId: string | null,
   // The items keep the numbers they were given, so that an item is known by the same id whatever is left out below.
   // A turn (a request and what came of it) the talk was taken back to before is not the talk any more: it is left
   // out when its request is not among the records the talk stands on. A subagent's talk is not taken back.
+  // What is left out is kept beside the talk, a stretch at a time: turns that followed one another are one stretch.
+  let gone: Item[][] = [];
   if (!parentId) {
     const stands = standing(chain);
     let kept = true; // what was said before any request stays
+    let left: string | undefined; // the record of the request left out just before
     const still = items.filter((item) => {
       if (item.kind === "prompt") {
         const record = sources.get(item);
         kept = record === undefined || stands.has(record);
+        if (!kept && (left === undefined || askedBefore(chain, record!) !== left)) gone.push([]);
+        left = kept ? undefined : record;
       }
+      if (!kept) gone.at(-1)!.push(item);
       return kept;
     });
     if (still.length !== items.length) {
@@ -253,6 +269,7 @@ async function readTranscript(path: string, id: string, parentId: string | null,
       items.length = 0;
       items.push(...own);
       first = items[0]?.at ?? first;
+      gone = gone.map((stretch) => stretch.filter((item) => !theirs.has(sources.get(item) ?? ""))).filter((stretch) => stretch.length);
     }
   }
   const firstPrompt = items.find((item) => item.kind === "prompt");
@@ -281,6 +298,7 @@ async function readTranscript(path: string, id: string, parentId: string | null,
         items,
         open,
         ...(forkKept ? { forkKept } : {}),
+        ...(gone.length ? { gone } : {}),
       }
     : null;
   if (transcript && transcript.session.activity === "running") {

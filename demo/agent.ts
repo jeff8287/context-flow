@@ -98,9 +98,25 @@ function threads(): DatabaseSync {
   db.exec(THREADS);
   return db;
 }
+/** The file a thread's record is kept in now, as the list of threads has it: a thread whose request was said again
+ *  in the app keeps a newer file than its first. */
+function recordOf(thread: string): string {
+  const db = threads();
+  const row = db.prepare("select rollout_path from threads where id = ?").get(thread) as { rollout_path: string | null } | undefined;
+  db.close();
+  return row?.rollout_path || rolloutPath(thread);
+}
+/** The record file with that id of its own (a thread's first file has the thread's id), and the id a file has. */
+function fileOf(own: string): string | null {
+  const dir = dirname(rolloutPath(own));
+  const name = existsSync(dir) ? readdirSync(dir).find((one) => one === basename(rolloutPath(own)) || one.endsWith("_" + own + ".jsonl")) : undefined;
+  return name ? join(dir, name) : null;
+}
+const ownId = (path: string) => /([0-9a-f-]{36})\.jsonl$/.exec(path)?.[1] ?? "";
+
 function codexRecord(thread: string, turn: string, rows: Record<string, unknown>[]): void {
   const now = Date.now();
-  appendFileSync(rolloutPath(thread), rows.map((row) => line("payload" in row ? { timestamp: iso(now), ...row } : { timestamp: iso(now), type: "event_msg", payload: { type: "item_completed", turn_id: turn, completed_at_ms: now, item: row } })).join(""));
+  appendFileSync(recordOf(thread), rows.map((row) => line("payload" in row ? { timestamp: iso(now), ...row } : { timestamp: iso(now), type: "event_msg", payload: { type: "item_completed", turn_id: turn, completed_at_ms: now, item: row } })).join(""));
   const db = threads();
   db.prepare("update threads set updated_at_ms = ? where id = ?").run(now, thread);
   db.close();
@@ -161,12 +177,21 @@ function asClaude(args: string[]): void {
       const rows = readFileSync(other, "utf8").split("\n").filter(Boolean).map((row) => JSON.parse(row));
       const upTo = rows.findIndex((row) => row.uuid === forked.at);
       if (upTo === -1) return out({ type: "result", is_error: true, result: "No message found with message.uuid of: " + forked.at });
-      const copied = rows.slice(0, upTo + 1).filter((row) => typeof row.uuid === "string").map((row) => ({ ...row, sessionId: session }));
+      // Only what the talk stands on at that record is carried over: a talk that was taken back leaves the rest
+      // behind. Each record names the one before it; one that names none follows the one written before it.
+      const asks = (row: any) => row.type === "user" && !row.toolUseResult && (typeof row.message?.content === "string" || (Array.isArray(row.message?.content) && !row.message.content.some((block: any) => block?.type === "tool_result")));
+      const stands = new Set<number>();
+      for (let at = upTo; at >= 0 && !stands.has(at);) {
+        stands.add(at);
+        const named = typeof rows[at].parentUuid === "string" ? rows.findIndex((row) => row.uuid === rows[at].parentUuid) : -1;
+        at = named !== -1 ? named : rows[at].parentUuid === null && asks(rows[at]) ? -1 : at - 1;
+      }
+      const copied = rows.filter((row, at) => stands.has(at) && typeof row.uuid === "string").map((row) => ({ ...row, sessionId: session }));
       // a fork of a fork names the whole way it came, the session it was forked from last
       const way = [...(rows.find((row) => row.type === "derived-from")?.sessions ?? []), { type: "claude_code_session", id: forked.from, via: "fork" }];
       mkdirSync(dirname(record), { recursive: true });
       writeFileSync(record, line({ type: "derived-from", v: 1, sessionId: session, sessions: way }) + copied.map(line).join(""));
-      extra.kept = copied.filter((row) => row.type === "user" && !row.toolUseResult && (typeof row.message?.content === "string" || (Array.isArray(row.message?.content) && !row.message.content.some((block: any) => block?.type === "tool_result")))).length;
+      extra.kept = copied.filter(asks).length;
     }
     const added = hooked(session, prompt, cwd, record);
     claudeRecord(session, cwd, claudeAsked(prompt, added, pictures));
@@ -199,23 +224,41 @@ function asClaude(args: string[]): void {
 
 // ---------- as the Codex app server, run by the tool ----------
 
-/** How far into a thread's record a fork of it goes that keeps its turns up to one of them: to the end of the last
- *  line that tells of that turn (to the end of the record when no turn is named). Null when the turn is not there. */
-function endOf(thread: string, lastTurn: string | null): number | null {
-  const whole = readFileSync(rolloutPath(thread));
-  if (!lastTurn) return whole.length;
-  let end: number | null = null;
-  let at = 0;
-  for (const row of whole.toString("utf8").split("\n")) {
-    at += Buffer.byteLength(row) + 1;
-    if (row.includes('"turn_id":' + JSON.stringify(lastTurn))) end = Math.min(at, whole.length);
+/** How far into a thread's record a fork of it goes that keeps its turns up to one of them: in which file (by that
+ *  file's own id), and to the end of the last line there that tells of that turn (to the end of the newest file
+ *  when no turn is named). The turn is looked for back through the files the thread's talk lies in. Null when it is
+ *  not there. */
+function endOf(thread: string, lastTurn: string | null): { file: string; end: number } | null {
+  let path: string | null = recordOf(thread);
+  let within = Infinity; // how much of the file is of the thread's talk
+  for (let guard = 0; path && guard < 24; guard += 1) {
+    const whole = readFileSync(path);
+    const upTo = Math.min(within, whole.length);
+    if (!lastTurn) return { file: ownId(path), end: upTo };
+    let end: number | null = null;
+    let at = 0;
+    const rows = whole.subarray(0, upTo).toString("utf8").split("\n");
+    for (const row of rows) {
+      at += Buffer.byteLength(row) + 1;
+      if (row.includes('"turn_id":' + JSON.stringify(lastTurn))) end = Math.min(at, upTo);
+    }
+    if (end !== null) return { file: ownId(path), end };
+    let base: any = null;
+    try {
+      base = JSON.parse(rows[0])?.payload?.history_base;
+    } catch { /* no first line */ }
+    const before: string | null = base ? fileOf(String(base.thread_id)) : null;
+    if (!before || !basename(before).startsWith("rollout-" + thread)) return null; // another thread's file: the turn is not this thread's
+    path = before;
+    within = Number(base.end_byte_offset);
   }
-  return end;
+  return null;
 }
-/** How many requests a thread's record holds in its first so many bytes, with those the thread was itself given when
- *  it was forked. */
-function keptIn(thread: string, end: number): number {
-  const rows = readFileSync(rolloutPath(thread)).subarray(0, end).toString("utf8").split("\n").filter(Boolean).map((row) => { try { return JSON.parse(row); } catch { return null; } });
+/** How many requests a record file holds in its first so many bytes, with those of the files its history lies in. */
+function keptIn(own: string, end: number): number {
+  const path = fileOf(own);
+  if (!path) return 0;
+  const rows = readFileSync(path).subarray(0, end).toString("utf8").split("\n").filter(Boolean).map((row) => { try { return JSON.parse(row); } catch { return null; } });
   const base = rows[0]?.payload?.history_base;
   return rows.filter((row) => row?.payload?.type === "item_completed" && row.payload.item?.type === "UserMessage").length + (base ? keptIn(base.thread_id, base.end_byte_offset) : 0);
 }
@@ -237,8 +280,8 @@ function asCodex(): void {
     // a model asked for with a turn is the thread's from then on, as with the real client
     if (model) db.prepare("update threads set model = ? where id = ?").run(model, thread.id);
     db.close();
-    if (model) appendFileSync(rolloutPath(thread.id), line({ timestamp: iso(Date.now()), type: "turn_context", payload: { cwd: thread.cwd, model, approval_policy: "on-request", sandbox_policy: { type: "workspace-write" } } }));
-    const added = hooked(thread.id, prompt, thread.cwd, rolloutPath(thread.id));
+    if (model) appendFileSync(recordOf(thread.id), line({ timestamp: iso(Date.now()), type: "turn_context", payload: { cwd: thread.cwd, model, approval_policy: "on-request", sandbox_policy: { type: "workspace-write" } } }));
+    const added = hooked(thread.id, prompt, thread.cwd, recordOf(thread.id));
     // the record names a picture the way the real client's record does
     codexRecord(thread.id, turnId, codexAsked(turnId, prompt, added, pictures.map((one) => ({ type: "local_image", path: one.path }))));
     let edited: "done" | "refused" | null = null;
@@ -301,8 +344,8 @@ function asCodex(): void {
         db.close();
         return out({ id: message.id, error: { message: "no rollout found for thread id " + params.threadId } });
       }
-      const end = endOf(row.id, typeof params.lastTurnId === "string" ? params.lastTurnId : null);
-      if (end === null) {
+      const kept = endOf(row.id, typeof params.lastTurnId === "string" ? params.lastTurnId : null);
+      if (kept === null) {
         db.close();
         return out({ id: message.id, error: { message: "turn not found in thread: " + params.lastTurnId } });
       }
@@ -310,12 +353,12 @@ function asCodex(): void {
       const cwd = String(params.cwd ?? row.cwd);
       const model = String(params.model ?? row.model ?? MODEL.codex);
       const now = Date.now();
-      writeFileSync(rolloutPath(id), line({ timestamp: iso(now), type: "session_meta", payload: { id, cwd, forked_from_id: row.id, history_mode: "paginated", history_base: { thread_id: row.id, end_byte_offset: end } } })
+      writeFileSync(rolloutPath(id), line({ timestamp: iso(now), type: "session_meta", payload: { id, cwd, forked_from_id: row.id, history_mode: "paginated", history_base: { thread_id: kept.file, end_byte_offset: kept.end } } })
         + line({ timestamp: iso(now), type: "turn_context", payload: { cwd, model, approval_policy: params.approvalPolicy ?? "on-request", sandbox_policy: { type: params.sandbox ?? "workspace-write" } } }));
       db.prepare("insert into threads (id, rollout_path, cwd, title, name, model, created_at_ms, updated_at_ms, thread_source, source, archived, first_user_message, attached_thread_parent_id) values (?, ?, ?, '', null, ?, ?, ?, null, 'cli', 0, '', null)")
         .run(id, rolloutPath(id), cwd, model, now, now);
       db.close();
-      thread = { id, cwd, kept: keptIn(row.id, end) };
+      thread = { id, cwd, kept: keptIn(kept.file, kept.end) };
       out({ id: message.id, result: { thread: { id } } });
     } else if (message.method === "thread/resume") {
       const db = threads();
@@ -358,7 +401,7 @@ function say(name: string, prompt: string): void {
     console.error("쓰는 법: npm run demo:say -- <세션> \"<할 말>\"\n세션 이름: " + Object.entries(SESSIONS).map(([short, one]) => short + " (" + one.title + ")").join(", ") + "\n데모 중에 새로 만든 세션은 id의 앞머리로 부릅니다.");
     process.exit(1);
   }
-  const record = who.client === "codex" ? rolloutPath(who.id) : transcriptPath(who.cwd, who.id);
+  const record = who.client === "codex" ? recordOf(who.id) : transcriptPath(who.cwd, who.id);
   const added = hooked(who.id, prompt, who.cwd, record);
   const change = wantsEdit(prompt) ? edit(who.cwd, prompt) : null;
   if (change) apply(change); // in its own window the person is there to allow it

@@ -15,7 +15,7 @@ import { freshPlan } from "./fresh.ts";
 import { filesIn, filesNote, pieceBlock, withBlocks } from "./links.ts";
 import type { Client, Place, Project, Session, Transfer } from "./model.ts";
 import { picturesOf, SHOWN } from "./pictures.ts";
-import { findIn, talkOf } from "./read.ts";
+import { findIn, goneOf, talkOf } from "./read.ts";
 import { buildSnapshot, findProjects, nearestProject, readCodexProjects, type Built } from "./snapshot.ts";
 import { standalonePage } from "./standalone.ts";
 import { appendTransfers, dropPending, queuePieces, readBasket, saveUploads, takePending, tidyStore, uploadedFile, writeBasket, type Pending } from "./store.ts";
@@ -387,6 +387,10 @@ export function serve(port: number, webDir: string): Served {
           const item = made.bodies.get(id);
           if (item) return send(200, item);
         }
+        // something that was said and then taken back: it is in no snapshot, and is read as a whole all the same
+        for (const made of newestFirst()) {
+          for (const stretches of made.gone.values()) for (const stretch of stretches) for (const item of stretch) if (item.id === id) return send(200, item);
+        }
         return send(404, { error: "그런 조각이 없습니다" });
       }
       if (url.pathname === "/api/picture" || url.pathname === "/api/attached") {
@@ -431,7 +435,7 @@ export function serve(port: number, webDir: string): Served {
         const id = url.searchParams.get("session") ?? "";
         for (const made of newestFirst()) {
           if (!made.snapshot.sessions.some((session) => session.id === id)) continue;
-          return send(200, { items: talkOf(made.bodies.values(), id) });
+          return send(200, { items: talkOf(made.bodies.values(), id), gone: goneOf(made.bodies.values(), id, made.gone.get(id)) });
         }
         return send(404, { error: "그런 세션이 없습니다" });
       }

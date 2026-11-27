@@ -214,3 +214,12 @@ export interface Snapshot {
   /** What could not be read, said plainly rather than left out silently. */
   notes: string[];
 }
+
+/** A stretch of a session's talk that was said and then taken back: a request of it was said again in another way
+ *  (Codex, in the app), or the talk was taken back to before it (Claude Code). The agent no longer has it, so it is
+ *  not of the talk: it ties nothing and no piece is cut from it. It is kept to be looked at where it was said.
+ *  before: the request of the talk it is shown before, the first made after the stretch began; null when none was. */
+export interface Gone {
+  before: string | null;
+  items: Item[];
+}

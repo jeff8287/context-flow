@@ -251,3 +251,58 @@ test("a request said again begins a fork of the session as it stood before that 
     await served.close();
   }
 });
+
+test("a talk that went one way and then another is given with what was left behind, and is carried on like any other", { skip }, async () => {
+  useDemoHomes();
+  useStandIns();
+  const served = serve(0, join(ROOT, "packages", "web", "dist"));
+  const at = "http://127.0.0.1:" + (await served.ready);
+  const post = async (path: string, payload: unknown) => {
+    const got = await fetch(at + path, { method: "POST", headers: { "content-type": "application/json", origin: at }, body: JSON.stringify(payload) });
+    return { status: got.status, body: (await got.json()) as Record<string, any> };
+  };
+  type Talk = { items: { id: string; kind: string; text: string }[]; gone: { before: string | null; items: { id: string; kind: string; text: string }[] }[] };
+  const talk = async (session: string): Promise<Talk> => {
+    await fetch(at + "/api/snapshot?project=" + PROJECTS.web.id); // the records are read again first
+    return (await (await fetch(at + "/api/talk?session=" + session)).json()) as Talk;
+  };
+  try {
+    // Codex: the second request was said again in the app. Claude Code: the talk was taken back after its first turn.
+    for (const [name, kinds, word] of [["map", "prompt change answer", /바로 예약되게/], ["form", "prompt answer", /탭 순서를/]] as const) {
+      const session = SESSIONS[name];
+      const before = await talk(session.id);
+      const prompts = before.items.filter((item) => item.kind === "prompt");
+      assert.ok(prompts.length >= 2, name);
+      assert.equal(before.gone.length, 1, name);
+      const [behind] = before.gone;
+      assert.equal(behind.items.map((item) => item.kind).join(" "), kinds);
+      assert.match(behind.items[0].text, word);
+      // it is shown before the request that was made in its stead: the second the talk stands on
+      assert.equal(behind.before, prompts[1].id);
+      // it is of the talk no more: not among its items, nor anything the snapshot counts or ties
+      assert.ok(!before.items.some((item) => behind.items.some((one) => one.id === item.id)));
+      const snapshot = (await (await fetch(at + "/api/snapshot?project=" + PROJECTS.web.id)).json()) as Snapshot;
+      assert.ok(!snapshot.items.some((item) => behind.items.some((one) => one.id === item.id)));
+      // and its words can still be read whole
+      assert.equal(((await (await fetch(at + "/api/item?id=" + encodeURIComponent(behind.items[0].id))).json()) as { text: string }).text, behind.items[0].text);
+      // The session is spoken to in its own window: what is said is added to the talk, not to what was left behind.
+      say(name, "하나만 더 봐줘");
+      const after = await talk(session.id);
+      assert.equal(after.items.filter((item) => item.kind === "prompt").length, prompts.length + 1, name);
+      assert.deepEqual(after.gone.map((one) => [one.before, one.items.map((item) => item.id)]), before.gone.map((one) => [one.before, one.items.map((item) => item.id)]));
+      // The request made in its stead, said again: the fork is given the first request and its answer, and neither
+      // what was left behind nor what came after.
+      const forked = await post("/api/fork", { project: PROJECTS.web.id, session: session.id, item: prompts[1].id, text: "이번에는 이렇게 해줘" });
+      assert.equal(forked.status, 200, JSON.stringify(forked.body));
+      let said: Talk["items"] = [];
+      for (let tries = 0; tries < 40 && said.length < 2; tries += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if ((await (await fetch(at + "/api/turn/active?session=" + forked.body.session)).json()).turn) continue;
+        said = (await talk(forked.body.session)).items;
+      }
+      assert.match(said[1]?.text ?? "", /요청 1개와 그 답까지를 물려받았/, name);
+    }
+  } finally {
+    await served.close();
+  }
+});
