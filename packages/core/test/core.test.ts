@@ -23,6 +23,7 @@ import { standalonePage } from "../src/standalone.ts";
 import { appendTransfers, dropPending, queuePieces, readBasket, readPending, readTransfers, takePending, tidyStore, writeBasket, type Pending } from "../src/store.ts";
 import { startNew, type Turn } from "../src/talk.ts";
 import { typed } from "../src/util.ts";
+import { Interest } from "../src/watch.ts";
 
 const scratchDir = mkdtempSync(join(tmpdir(), "context-flow-test-"));
 const line = (value: unknown) => JSON.stringify(value) + "\n";
@@ -818,4 +819,22 @@ test("what a hook or a server left half done is cleared away: a piece taken and 
   } finally {
     delete process.env.CONTEXT_FLOW_HOME;
   }
+});
+test("a screen is told of changes to the records of its own sessions, of a record it does not know once, and of pieces and of what processes say always", () => {
+  const known = new Set(["/records/mine.jsonl"]);
+  const interest = new Interest();
+  const records = (path: string) => ({ where: "records" as const, path });
+  assert.equal(interest.matters(records("/records/mine.jsonl"), known), true);
+  // a record that is not known may be a session just begun: it matters until the records were read and did not hold it
+  assert.equal(interest.matters(records("/records/other.jsonl"), known), true);
+  assert.equal(interest.matters(records("/records/other.jsonl"), known), true);
+  interest.settle(known);
+  assert.equal(interest.matters(records("/records/other.jsonl"), known), false);
+  assert.equal(interest.matters(records("/records/mine.jsonl"), known), true);
+  // it turned out to be a session of the screen's after all (a later reading holds it): it matters again
+  assert.equal(interest.matters(records("/records/other.jsonl"), new Set([...known, "/records/other.jsonl"])), true);
+  // before anything was read for the screen, everything matters
+  assert.equal(new Interest().matters(records("/records/any.jsonl"), null), true);
+  assert.equal(interest.matters({ where: "flow", path: "/flow/pending/x/y.json" }, known), true);
+  assert.equal(interest.matters({ where: "live", path: "/live/1.json" }, known), true);
 });

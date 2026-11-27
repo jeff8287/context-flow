@@ -8,11 +8,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import type { Snapshot } from "../packages/core/src/model.ts";
 
 const home = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), "home-test-"));
 process.env.CONTEXT_FLOW_DEMO_HOME = home; // read by world.ts when it is loaded, and by the agent this starts
 const { make, unfit } = await import("./make.ts");
-const { ROOT, SESSIONS, useDemoHomes } = await import("./world.ts");
+const { PROJECTS, ROOT, SESSIONS, useDemoHomes } = await import("./world.ts");
+const { serve } = await import("../packages/core/src/server.ts");
 const { pieceBlock } = await import("../packages/core/src/links.ts");
 const { noLive } = await import("../packages/core/src/live.ts");
 const { forgetPastes } = await import("../packages/core/src/paste.ts");
@@ -74,4 +76,32 @@ test("a piece set to wait goes with the next thing typed in the session's own wi
   }
   // nothing waits for it any more: the next thing typed goes alone
   assert.match(say("ci", "하나 더"), /걸려 있던 조각은 없었습니다/);
+});
+test("a screen that asked to be told hears of it when a session of its project is spoken to in its own window", { skip }, async () => {
+  useDemoHomes();
+  const served = serve(0, join(ROOT, "packages", "web", "dist"));
+  const at = "http://127.0.0.1:" + (await served.ready);
+  const answers = async () => ((await (await fetch(at + "/api/snapshot?project=" + PROJECTS.api.id)).json()) as Snapshot).sessions.find((one) => one.id === SESSIONS.docs.id)?.counts.answers ?? -1;
+  try {
+    const before = await answers();
+    const reader = (await fetch(at + "/api/events?project=" + PROJECTS.api.id)).body!.getReader();
+    let heard = "";
+    const until = async (wanted: string, within: number) => {
+      const end = Date.now() + within;
+      while (!heard.includes(wanted) && Date.now() < end) {
+        const late = new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(1, end - Date.now())));
+        const got = await Promise.race([reader.read(), late]);
+        if (!got || got.done) break;
+        heard += Buffer.from(got.value).toString("utf8");
+      }
+      return heard.includes(wanted);
+    };
+    assert.ok(await until('"t":"hello","watching":true', 3000), "the server watches the records: " + heard);
+    await new Promise((resolve) => setTimeout(resolve, 400)); // the watch has a moment to begin
+    say("docs", "하나 더 물을게");
+    assert.ok(await until('"t":"changed"', 8000), "told that the records changed: " + heard);
+    assert.equal(await answers(), before + 1);
+  } finally {
+    await served.close();
+  }
 });

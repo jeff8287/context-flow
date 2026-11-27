@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
+import type { AddressInfo } from "node:net";
 import { userInfo } from "node:os";
 import { basename, extname, join, normalize } from "node:path";
 import { HOME } from "./home.ts";
@@ -18,6 +19,7 @@ import { appendTransfers, dropPending, queuePieces, readBasket, takePending, tid
 import { tracePiece } from "./trace.ts";
 import { startNew, startTurn, type Turn } from "./talk.ts";
 import { oneLine } from "./util.ts";
+import { Interest, watchRecords } from "./watch.ts";
 
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json" };
 
@@ -73,9 +75,50 @@ function placeOf(made: Built, session: Pick<Session, "projectId" | "title" | "cl
   return { project: own.id, projectName: own.name, title: session.title, client: session.client };
 }
 
-export function serve(port: number, webDir: string): void {
+/** A screen that asked to be told when what it shows has changed. key: the project it shows, or the several, as a
+ *  snapshot of them is known by. */
+interface Screen { key: string; interest: Interest; tell(event: unknown): void; timer: ReturnType<typeof setTimeout> | null; last: number }
+
+/** The server that was started: which port it took (the one asked for, or any when 0 was asked for), and how to end it. */
+export interface Served { ready: Promise<number>; close(): Promise<void> }
+
+export function serve(port: number, webDir: string): Served {
   const built = new Map<string, Built>();
   const turns = new Map<string, Turn>();
+  let bound = port;
+  // The screens are told when the records change, so that they need not ask to find out. A burst of writing is told
+  // of once it has had a moment to end, and a screen is told at most once a second.
+  const screens = new Set<Screen>();
+  const paths = new WeakMap<Built, Set<string>>();
+  const knownOf = (made: Built): Set<string> => {
+    let known = paths.get(made);
+    if (!known) {
+      known = new Set(made.snapshot.sessions.map((session) => session.recordPath).filter((path): path is string => Boolean(path)));
+      paths.set(made, known);
+    }
+    return known;
+  };
+  const nudge = (screen: Screen) => {
+    if (screen.timer) return;
+    screen.timer = setTimeout(() => {
+      screen.timer = null;
+      screen.last = Date.now();
+      screen.tell({ t: "changed" });
+    }, Math.max(150, screen.last + 1000 - Date.now()));
+  };
+  const watcher = watchRecords((change) => {
+    for (const screen of screens) {
+      const made = built.get(screen.key);
+      if (screen.interest.matters(change, made ? knownOf(made) : null)) nudge(screen);
+    }
+  });
+  /** A turn this server runs changes what its session is doing, and the server knows it before any record says so. */
+  const follow = (turn: Turn) => {
+    for (const screen of screens) nudge(screen);
+    turn.listen((event) => {
+      if (event.t === "ask" || event.t === "answered" || event.t === "done") for (const screen of screens) nudge(screen);
+    });
+  };
   // wanted: a project (its id, a folder of it, or its name), or several put on one map (their ids, joined by commas)
   const read = async (wanted: string): Promise<Built | null> => {
     const { projects, assigned } = readCodexProjects();
@@ -96,6 +139,7 @@ export function serve(port: number, webDir: string): void {
       if (asked.size) session.needs = "approval";
     }
     built.set(made.snapshot.project.id, made);
+    for (const screen of screens) if (screen.key === made.snapshot.project.id) screen.interest.settle(knownOf(made));
     return made;
   };
   // A session can be on several maps that were read (its project alone, and beside another). The one read last knows
@@ -110,7 +154,7 @@ export function serve(port: number, webDir: string): void {
     try {
       // Only this machine's own page may talk to the API: a page from elsewhere could otherwise start a turn in a session.
       const host = request.headers.host ?? "";
-      const mine = host === "127.0.0.1:" + port || host === "localhost:" + port;
+      const mine = host === "127.0.0.1:" + bound || host === "localhost:" + bound;
       if (url.pathname.startsWith("/api/") && !mine) return send(403, { error: "이 컴퓨터의 화면에서만 씁니다" });
       if (request.method === "POST") {
         if (request.headers.origin !== "http://" + host || !String(request.headers["content-type"] ?? "").startsWith("application/json")) return send(403, { error: "이 화면에서 보낸 요청만 받습니다" });
@@ -135,6 +179,7 @@ export function serve(port: number, webDir: string): void {
           const transfers = [...waited.rows.map(({ block: _, ...row }) => row as Transfer), ...pieces.map((piece) => piece.transfer)];
           const turn = startTurn(session, withBlocks(text, [...waited.rows.map((row) => row.block), ...pieces.map((piece) => pieceBlock(piece.block))]));
           turns.set(turn.id, turn);
+          follow(turn);
           // The pieces are written down once the session has taken the message: when it begins to answer, or ends well.
           let kept = false;
           turn.listen((event) => {
@@ -173,6 +218,7 @@ export function serve(port: number, webDir: string): void {
           if (!pieces) return send(400, { error: "붙인 조각을 기록에서 찾지 못했습니다. 기록을 다시 읽은 뒤 담아 주세요" });
           const { turn, ready } = startNew({ client, cwd, like }, withBlocks(text, pieces.map((piece) => pieceBlock(piece.block))));
           turns.set(turn.id, turn);
+          follow(turn);
           let kept = false;
           turn.listen((event) => {
             if (kept || event.t === "prompt" || !turn.sessionId) return;
@@ -294,6 +340,23 @@ export function serve(port: number, webDir: string): void {
         const turn = [...turns.values()].find((one) => one.sessionId === id && !one.done);
         return send(200, { turn: turn?.id ?? null });
       }
+      if (url.pathname === "/api/events") {
+        // Told when what a screen shows has changed: the records of its projects, what a client's process says it is
+        // at, a piece set to wait or taken. Only that something changed is said; the screen then reads again.
+        const chosen = findProjects(url.searchParams.get("project") ?? "", readCodexProjects().projects);
+        response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive" });
+        const tell = (event: unknown) => { response.write("data: " + JSON.stringify(event) + "\n\n"); };
+        const screen: Screen = { key: chosen.map((one) => one.id).join(","), interest: new Interest(), tell, timer: null, last: 0 };
+        screens.add(screen);
+        tell({ t: "hello", watching: watcher.watching() > 0 });
+        const beat = setInterval(() => response.write(": beat\n\n"), 25_000);
+        request.on("close", () => {
+          clearInterval(beat);
+          if (screen.timer) clearTimeout(screen.timer);
+          screens.delete(screen);
+        });
+        return;
+      }
       if (url.pathname === "/api/turn/stream") {
         const turn = turns.get(url.searchParams.get("turn") ?? "");
         if (!turn) return send(404, { error: "그런 턴이 없습니다" });
@@ -317,7 +380,13 @@ export function serve(port: number, webDir: string): void {
       send(500, { error: String(error instanceof Error ? error.message : error) });
     }
   });
-  server.listen(port, "127.0.0.1", () => console.log("context-flow: http://127.0.0.1:" + port));
+  const ready = new Promise<number>((resolve) => {
+    server.listen(port, "127.0.0.1", () => {
+      bound = (server.address() as AddressInfo).port;
+      console.log("context-flow: http://127.0.0.1:" + bound);
+      resolve(bound);
+    });
+  });
   // what a hook or an earlier server left half done is cleared away: now, and every ten minutes
   const tidy = () => {
     try {
@@ -326,7 +395,8 @@ export function serve(port: number, webDir: string): void {
     } catch { /* nothing to clear, or not ours to clear */ }
   };
   tidy();
-  setInterval(tidy, 600_000).unref();
+  const tidying = setInterval(tidy, 600_000);
+  tidying.unref();
   // a turn's client must not outlive this server
   const quit = () => {
     for (const turn of turns.values()) if (!turn.done) turn.stop();
@@ -334,4 +404,16 @@ export function serve(port: number, webDir: string): void {
   };
   process.on("SIGINT", quit);
   process.on("SIGTERM", quit);
+  return {
+    ready,
+    close: () => new Promise<void>((resolve) => {
+      process.off("SIGINT", quit);
+      process.off("SIGTERM", quit);
+      clearInterval(tidying);
+      watcher.close();
+      for (const turn of turns.values()) if (!turn.done) turn.stop();
+      server.close(() => resolve());
+      server.closeAllConnections();
+    }),
+  };
 }
