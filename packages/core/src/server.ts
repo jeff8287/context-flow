@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { userInfo } from "node:os";
 import { basename, extname, join, normalize } from "node:path";
 import { HOME } from "./home.ts";
-import { answerBefore } from "./claude.ts";
+import { stoodBefore } from "./claude.ts";
 import { forkPoint, ownRecords } from "./codex.ts";
 import { makeBundle, maskBundle, type Spot } from "./bundle.ts";
 import { freshPlan } from "./fresh.ts";
@@ -296,8 +296,10 @@ export function serve(port: number, webDir: string): Served {
           // Where the session is to be forked: each client names the place in its own way.
           let point: { from: string; at: string } | null | undefined;
           if (session.client === "claude") {
-            const at = session.recordPath && prompt.turnId ? await answerBefore(session.recordPath, prompt.turnId) : undefined;
-            point = typeof at === "string" ? { from: session.id, at } : at;
+            const stood = session.recordPath && prompt.turnId ? await stoodBefore(session.recordPath, prompt.turnId) : { not: "found" as const };
+            if ("not" in stood && stood.not === "summed") return send(400, { error: "Claude Code가 이 요청 뒤에 대화를 요약했습니다. 요약한 자리보다 앞에서는 대화를 갈라 낼 수 없습니다" });
+            if ("not" in stood && stood.not === "back") return send(400, { error: "되감아서 지금 대화에 없는 요청입니다. 여기서는 대화를 갈라 낼 수 없습니다" });
+            point = "not" in stood ? undefined : stood.at === null ? null : { from: session.id, at: stood.at };
           } else {
             const nth = (item: { id: string }) => Number(item.id.slice(item.id.lastIndexOf(":") + 1));
             const own = [...made.bodies.values()].filter((item) => item.sessionId === session.id).sort((one, other) => nth(one) - nth(other));

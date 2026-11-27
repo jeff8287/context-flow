@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { answer, makeBundle, maskBundle, readBundle } from "../src/bundle.ts";
-import { answerBefore, folderName, readClaudeSessions } from "../src/claude.ts";
+import { folderName, readClaudeSessions, stoodBefore } from "../src/claude.ts";
 import { freshPlan } from "../src/fresh.ts";
 import { applyRollout, forkPoint, keptTurn, readRollout, recordFiles, type RecordFiles } from "../src/codex.ts";
 import { hookStates } from "../src/hooks.ts";
@@ -933,17 +933,91 @@ test("a Claude Code session forked from another begins with copies of that one's
   assert.deepEqual(transcripts.find((one) => one.session.id === "base")!.items.length, 4);
   assert.deepEqual(recordedLinks(transcripts.map((one) => one.session)).links.map((link) => [link.kind, link.from.sessionId, link.to.sessionId]), [["fork", "base", "fork"]]);
   // where a session is carried on from, to say one of its requests again: the record of the last answer before it
-  assert.equal(await answerBefore(join(dir, "base.jsonl"), "u2"), "a1");
-  assert.equal(await answerBefore(join(dir, "base.jsonl"), "u1"), null); // nothing was said before the first
-  assert.equal(await answerBefore(join(dir, "base.jsonl"), "nowhere"), undefined);
+  assert.deepEqual(await stoodBefore(join(dir, "base.jsonl"), "u2"), { at: "a1" });
+  assert.deepEqual(await stoodBefore(join(dir, "base.jsonl"), "u1"), { at: null }); // nothing was said before the first
+  assert.deepEqual(await stoodBefore(join(dir, "base.jsonl"), "nowhere"), { not: "found" });
   // in the fork, before its own first request stands the copy of the other's answer
-  assert.equal(await answerBefore(join(dir, "fork.jsonl"), "u3"), "a1");
+  assert.deepEqual(await stoodBefore(join(dir, "fork.jsonl"), "u3"), { at: "a1" });
   // A fork of the fork, made before the fork's own request: its record names the whole way it came, the nearest last,
   // and begins with the same copies. It is a fork of the fork, and nothing of either is its own.
   writeFileSync(join(dir, "again.jsonl"), line({ type: "derived-from", v: 1, sessionId: "again", sessions: [{ type: "claude_code_session", id: "base", via: "fork" }, { type: "claude_code_session", id: "fork", via: "fork" }] })
     + base.slice(0, 2).map((row) => line({ ...row, sessionId: "again" })).join("") + line(user("again", "u4", "2026-01-01T00:03:00Z", "암호는 몇 글자지?")) + line(agent("again", "a4", "2026-01-01T00:03:05Z", "9")));
   const later = (await readClaudeSessions(project, home, Date.parse("2026-01-01T01:00:00Z"))).transcripts.find((one) => one.session.id === "again")!;
   assert.deepEqual([later.session.origin, later.session.parentId, later.items.map((item) => item.text).join(" / "), later.forkKept], ["fork", "fork", "암호는 몇 글자지? / 9", "u1"]);
+});
+
+test("a Claude Code talk that was taken back is read the way it came, not the way its records lie", async () => {
+  // The shapes are those Claude Code 2.1.332 wrote when a talk was taken back (/rewind) and summed up in part.
+  const home = join(scratchDir, "claude-back");
+  const cwd = "/work/back";
+  const dir = join(home, "projects", folderName(cwd));
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "back.jsonl");
+  let second = 0;
+  const row = (type: string, uuid: string, parentUuid: string | null, more: Record<string, unknown> = {}) => line({ type, uuid, parentUuid, sessionId: "back", cwd, timestamp: new Date(Date.parse("2026-01-01T00:00:00Z") + 1000 * second++).toISOString(), ...more });
+  const user = (uuid: string, parent: string | null, content: string) => row("user", uuid, parent, { message: { role: "user", content } });
+  const agent = (uuid: string, parent: string, text: string) => row("assistant", uuid, parent, { message: { role: "assistant", model: "claude-x", stop_reason: "end_turn", content: [{ type: "text", text }] } });
+  const ended = (uuid: string, parent: string) => row("system", uuid, parent, { subtype: "turn_duration" });
+  const mark = (uuid: string, head: string, after: string, tail: string) => row("system", uuid, null, { subtype: "compact_boundary", logicalParentUuid: tail, compactMetadata: { preservedSegment: { headUuid: head, anchorUuid: after, tailUuid: tail } } });
+  const summary = (uuid: string, parent: string) => row("user", uuid, parent, { isCompactSummary: true, message: { role: "user", content: "This session is being continued from a previous conversation that ran out of context." } });
+  const project: Project = { id: "p", name: "back", roots: [cwd] };
+  const read = async () => (await readClaudeSessions(project, home, Date.parse("2026-01-01T01:00:00Z"))).transcripts[0];
+  const said = (transcript: Awaited<ReturnType<typeof read>>) => transcript.items.map((item) => item.id.slice(5) + " " + item.text).join(" / ");
+
+  // Three requests; then the talk is taken back to before the second, and a fourth is made there. The fourth names the
+  // end of the first turn as what it was made after. Two answers name a record that was never written (as some
+  // versions did): the record written just before stands for it.
+  writeFileSync(path, row("attachment", "h0", null, { attachment: { type: "hook_success" } })
+    + user("u1", "h0", "하나: 사과") + agent("a1", "u1", "사과") + ended("e1", "a1")
+    + user("u2", "e1", "둘: 배") + agent("a2", "not-written", "배") + ended("e2", "a2")
+    + user("u3", "e2", "셋: 감") + agent("a3", "u3", "감") + ended("e3", "a3")
+    + user("u4", "e1", "넷: 귤") + agent("a4", "not-written-either", "사과, 귤") + ended("e4", "a4"));
+  let talk = await read();
+  // the turns that were taken back are not the talk; the items keep the numbers their records give them
+  assert.equal(said(talk), "0 하나: 사과 / 1 사과 / 6 넷: 귤 / 7 사과, 귤");
+  assert.deepEqual([talk.session.counts.prompts, talk.session.counts.answers, talk.session.title], [2, 2, "하나: 사과"]);
+  // to say the fourth request again, the talk is taken up at the first answer: not at the answer written just before it
+  assert.deepEqual(await stoodBefore(path, "u4"), { at: "a1" });
+  assert.deepEqual(await stoodBefore(path, "u1"), { at: null });
+  assert.deepEqual(await stoodBefore(path, "u3"), { not: "back" });
+
+  // "Summarize from here" at the fourth request: a mark that names no record before it, the summary, and on. The
+  // summary is not something the user asked. What it was made of was said, and stays; what the mark says was left
+  // as it was said (the first turn) is the beginning of what Claude Code can take up again.
+  appendFileSync(path, mark("m1", "h0", "m1", "e1") + summary("c1", "m1") + user("u5", "c1", "다섯: 밤") + agent("a5", "u5", "밤") + ended("e5", "a5"));
+  talk = await read();
+  assert.equal(said(talk), "0 하나: 사과 / 1 사과 / 6 넷: 귤 / 7 사과, 귤 / 8 다섯: 밤 / 9 밤");
+  assert.deepEqual(await stoodBefore(path, "u5"), { at: "c1" }); // after the summary: the summary itself
+  assert.deepEqual(await stoodBefore(path, "u4"), { not: "summed" }); // it cannot be gone back to before a summary
+  assert.deepEqual(await stoodBefore(path, "u1"), { at: null }); // the stretch left as it was said begins with it
+  assert.deepEqual(await stoodBefore(path, "u2"), { not: "back" });
+
+  // "Summarize up to here" at the fifth request: the fifth turn is left as it was said and is taken to come after
+  // the summary. A sixth request follows; then the talk is taken back, and a seventh names the summary.
+  appendFileSync(path, mark("m2", "u5", "c2", "e5") + summary("c2", "m2") + row("attachment", "x6", "c2", { attachment: { type: "model" } })
+    + user("u6", "x6", "여섯: 잣") + agent("a6", "u6", "잣") + ended("e6", "a6") + user("u7", "c2", "일곱: 깨") + agent("a7", "u7", "깨"));
+  talk = await read();
+  assert.equal(said(talk), "0 하나: 사과 / 1 사과 / 6 넷: 귤 / 7 사과, 귤 / 8 다섯: 밤 / 9 밤 / 12 일곱: 깨 / 13 깨");
+  assert.deepEqual(await stoodBefore(path, "u7"), { at: "a5" }); // the stretch the summary left comes before it
+  assert.deepEqual(await stoodBefore(path, "u5"), { at: "c2" }); // and the summary before that stretch
+  assert.deepEqual(await stoodBefore(path, "u6"), { not: "back" });
+  assert.deepEqual(await stoodBefore(path, "u4"), { not: "summed" });
+
+  // A talk taken back to before its first request: the next request says nothing was before it.
+  rmSync(path);
+  writeFileSync(join(dir, "start.jsonl"), user("v1", null, "쌀") + agent("b1", "v1", "쌀") + user("v2", "b1", "밀") + agent("b2", "v2", "밀") + user("v3", null, "귀리") + agent("b3", "v3", "귀리"));
+  talk = await read();
+  assert.equal(talk.items.map((item) => item.id + " " + item.text).join(" / "), "start:4 귀리 / start:5 귀리");
+  assert.deepEqual(await stoodBefore(join(dir, "start.jsonl"), "v3"), { at: null });
+
+  // An answer has been seen written before the request it names (one record of one real talk): the way the talk
+  // came is still followed, and nothing is left out for it.
+  rmSync(join(dir, "start.jsonl"));
+  writeFileSync(join(dir, "early.jsonl"), agent("d1", "w1", "먼저 적힌 답") + ended("f1", "d1") + row("attachment", "g0", null, { attachment: { type: "hook_success" } }) + user("w1", "g0", "나중에 적힌 요청")
+    + user("w2", "f1", "다음 요청") + agent("d2", "w2", "다음 답"));
+  talk = await read();
+  assert.equal(talk.items.map((item) => item.text).join(" / "), "먼저 적힌 답 / 나중에 적힌 요청 / 다음 요청 / 다음 답");
+  assert.deepEqual(await stoodBefore(join(dir, "early.jsonl"), "w2"), { at: "d1" });
 });
 
 test("a Codex thread is forked after the turn before the request to be said again; a fork's own first request, where the fork itself was made", async () => {
