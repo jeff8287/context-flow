@@ -435,6 +435,14 @@ test("from a map, a session is begun in a folder outside its projects, chosen fr
     assert.deepEqual(forgot.body.projects.map((one: { id: string }) => one.id), [PROJECTS.api.id, PROJECTS.web.id]);
     assert.deepEqual(JSON.parse(readFileSync(join(FLOW, "folders.json"), "utf8")), []);
     assert.ok(session.recordPath && existsSync(session.recordPath), "the session's record is still there");
+    // What was let go is said, and can be put back as it was: the same project, kept at the same time
+    assert.deepEqual(forgot.body.gone.map((one: { root: string }) => one.root), [made]);
+    const back = await post("/api/projects/keep", { folders: forgot.body.gone });
+    assert.equal(back.status, 200, JSON.stringify(back.body));
+    assert.deepEqual(back.body.projects.map((one: { id: string; kept?: boolean }) => one.id + (one.kept ? " kept" : "")), [PROJECTS.api.id, PROJECTS.web.id, begun.body.project.id + " kept"]);
+    assert.deepEqual(JSON.parse(readFileSync(join(FLOW, "folders.json"), "utf8")), forgot.body.gone);
+    // nothing to put back, the top folder, and a folder that is not there, are refused
+    for (const folders of [[], [{ root: "/", at: 1 }], [{ root: join(made, "nowhere"), at: 1 }]]) assert.equal((await post("/api/projects/keep", { folders })).status, 400);
   } finally {
     rmSync(join(FLOW, "folders.json"), { force: true });
     await served.close();

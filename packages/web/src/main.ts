@@ -350,6 +350,9 @@ let dropError = "";
  *  map first, if it is on it; if it was all there was on the map, the first other project is shown instead. */
 async function forget(id: string) {
   const fail = (text: string) => { dropError = text; drawPicker(); };
+  const name = state.projects.find((one) => one.id === id)?.name ?? "";
+  const on = chosen.includes(id);
+  const alone = on && chosen.length === 1;
   if (chosen.includes(id)) {
     if (chosen.length > 1) await withProject(id, false);
     else {
@@ -359,13 +362,31 @@ async function forget(id: string) {
     }
     if (chosen.includes(id)) return fail("지도에서 내리지 못했습니다. 서버가 답하는지 봐 주세요");
   }
+  let gone: { root: string; at: number }[];
   try {
-    state.projects = (await post<{ projects: Project[] }>("/api/projects/forget", { project: id })).projects;
+    const got = await post<{ projects: Project[]; gone?: { root: string; at: number }[] }>("/api/projects/forget", { project: id });
+    state.projects = got.projects;
+    gone = got.gone ?? [];
   } catch (error) {
     return fail((error as Error).message);
   }
   dropping = null;
   dropError = "";
+  drawPicker();
+  // a press that was not meant can be undone for a while: from the card that says what was done
+  if (gone.length) card("‘" + name + "’ 프로젝트를 목록에서 뺐습니다", "세션의 기록은 그대로입니다.", { action: { label: "되돌리기", run: () => void unforget(id, gone, on, alone) } });
+}
+
+/** Put a project taken off the list back as it was: on the list where it stood, and on the map if it was there (by
+ *  itself, if that is how it was shown). */
+async function unforget(id: string, gone: { root: string; at: number }[], on: boolean, alone: boolean) {
+  try {
+    state.projects = (await post<{ projects: Project[] }>("/api/projects/keep", { folders: gone })).projects;
+  } catch (error) {
+    card("되돌리지 못했습니다", (error as Error).message);
+    return;
+  }
+  if (on && state.projects.some((one) => one.id === id)) await (alone ? show([id]) : withProject(id, true));
   drawPicker();
 }
 
@@ -657,8 +678,9 @@ let plainTitle = "";
 const away = () => document.visibilityState !== "visible" || !document.hasFocus();
 const allowed = () => typeof Notification !== "undefined" && Notification.permission === "granted";
 
-/** A card over the map, newest on top. It goes by itself after a while of being seen; pressed, it does what it is for. */
-function card(title: string, line: string, more: { tone?: string; color?: string; open?: () => void } = {}) {
+/** A card over the map, newest on top. It goes by itself after a while of being seen; pressed, it does what it is for.
+ *  action: a button of its own, for what can be done about what it says (undone, as a rule). */
+function card(title: string, line: string, more: { tone?: string; color?: string; open?: () => void; action?: { label: string; run: () => void } } = {}) {
   const box = el<HTMLElement>("toasts");
   const made = h("div", "toast" + (more.tone ? " " + more.tone : ""));
   if (more.color) made.style.setProperty("--c", more.color);
@@ -666,6 +688,13 @@ function card(title: string, line: string, more: { tone?: string; color?: string
   close.title = "닫기";
   close.onclick = (event) => { event.stopPropagation(); made.remove(); };
   made.append(h("b", "", title), h("span", "", line), close);
+  const action = more.action;
+  if (action) {
+    const button = h("button", "toast-act", action.label);
+    button.type = "button";
+    button.onclick = (event) => { event.stopPropagation(); made.remove(); action.run(); };
+    made.append(button);
+  }
   const open = more.open;
   if (open) {
     made.classList.add("go");

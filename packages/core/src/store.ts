@@ -55,12 +55,12 @@ export function keepFolder(root: string, at = Date.now()): void {
   writeFolders([{ root, at }, ...readFolders().filter((one) => one.root !== root)]);
 }
 
-/** Let go of the folders kept that match (their projects go off the list), and say how many there were. */
-export function dropFolders(match: (root: string) => boolean): number {
+/** Let go of the folders kept that match (their projects go off the list), and say which they were. */
+export function dropFolders(match: (root: string) => boolean): KeptFolder[] {
   const before = readFolders();
-  const kept = before.filter((one) => !match(one.root));
-  if (kept.length !== before.length) writeFolders(kept);
-  return before.length - kept.length;
+  const gone = before.filter((one) => match(one.root));
+  if (gone.length) writeFolders(before.filter((one) => !match(one.root)));
+  return gone;
 }
 
 function writeFolders(kept: KeptFolder[]): void {

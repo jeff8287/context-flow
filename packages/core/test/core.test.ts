@@ -860,7 +860,7 @@ test("where the Codex app has no projects, the folders the sessions worked in st
     // there, a folder kept that sessions worked in is on the list for that, and is not the screen's to take off
     assert.deepEqual(readProjects().projects.filter((one) => one.kept).map((one) => one.name), ["only-plain", "only-new"]);
     // taken off, its folder is let go (and only it), and it is off the list
-    assert.equal(forgetKept(readProjects().projects.find((one) => one.name === "only-new")!), true);
+    assert.deepEqual(forgetKept(readProjects().projects.find((one) => one.name === "only-new")!), [{ root: newRepo, at: hour(6).getTime() }]);
     assert.deepEqual(readFolders().map((one) => one.root).sort(), [join(repo, "packages"), join(scratchDir, "only-gone"), plain].sort());
     assert.ok(!readProjects().projects.some((one) => one.name === "only-new"));
   } finally {

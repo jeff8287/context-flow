@@ -603,6 +603,8 @@ body.moving, body.moving * { cursor: grabbing !important; user-select: none; -we
 .toast.approval span, .toast.input span { color: var(--ink); font-weight: 550; }
 .toast button { position: absolute; right: 5px; top: 5px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--faint); font-size: 15px; line-height: 1; }
 .toast button:hover { background: var(--press); color: var(--ink); }
+.toast .toast-act { position: static; justify-self: start; width: auto; height: 26px; margin-top: 6px; padding: 0 11px; border: 1px solid var(--edge-strong); border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1; }
+.toast .toast-act:hover { background: var(--hover); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 /* What goes with a message besides pieces: the files picked, the button that picks them, the model to answer with. */
