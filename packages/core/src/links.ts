@@ -57,7 +57,8 @@ export function pieceBlock(piece: { id: string; from: string; kind: string; text
 }
 
 /** A link for each piece that was sent and can be found in the receiving session's record. */
-export function transferLinks(transfers: Transfer[], items: Item[]): Link[] {
+export function transferLinks(transfers: Transfer[], items: Item[], left: Map<string, Item> = new Map()): Link[] {
+  // (left: what the sessions said and then left behind. A piece can be cut from that too: it was said when it was said.)
   const byId = new Map(items.map((item) => [item.id, item]));
   const prompts = new Map<string, Item[]>();
   for (const item of items) if (item.kind === "prompt") prompts.set(item.sessionId, [...(prompts.get(item.sessionId) ?? []), item]);
@@ -71,7 +72,7 @@ export function transferLinks(transfers: Transfer[], items: Item[]): Link[] {
       id: "transfer:" + transfer.id,
       grade: "recorded",
       kind: "transfer",
-      from: { ...transfer.from, at: byId.get(transfer.from.itemId)?.at ?? transfer.at },
+      from: { ...transfer.from, at: (byId.get(transfer.from.itemId) ?? left.get(transfer.from.itemId))?.at ?? transfer.at },
       to: { sessionId: transfer.to.sessionId, at: got.at, itemId: got.id },
       chars: transfer.text.length,
       excerpt: transfer.text.slice(0, 600),

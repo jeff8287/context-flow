@@ -66,12 +66,14 @@ async function cut(read: (project: string) => Promise<Built | null>, home: Built
   for (const one of picked) {
     // on the map (which may hold several projects), or else in the project the piece says it is from
     let made: Built | null | undefined = home;
-    let item = home.bodies.get(String(one?.itemId ?? ""));
+    // (an item of the talk, or of what the session said and then left behind: a piece is cut from either)
+    const id = String(one?.itemId ?? "");
+    let item = home.bodies.get(id) ?? home.left.get(id);
     const named = typeof one?.project === "string" ? one.project : "";
     if (!item && named) {
       if (!others.has(named)) others.set(named, await read(named));
       made = others.get(named);
-      item = made?.bodies.get(String(one?.itemId ?? ""));
+      item = made?.bodies.get(id) ?? made?.left.get(id);
     }
     const start = Number(one?.start);
     const end = Number(one?.end);
@@ -79,11 +81,11 @@ async function cut(read: (project: string) => Promise<Built | null>, home: Built
     const source = made.snapshot.sessions.find((other) => other.id === item.sessionId);
     const from = source ? placeOf(made, source) : null;
     const far = from && from.project !== to.where.project ? from : null; // the two ends are sessions of different projects
-    const id = "cf" + randomUUID().replace(/-/g, "").slice(0, 12);
+    const mark = "cf" + randomUUID().replace(/-/g, "").slice(0, 12);
     const text = item.text.slice(start, end);
     out.push({
-      transfer: { id, at: now, from: { sessionId: item.sessionId, itemId: item.id, start, end, ...(far ? { where: far } : {}) }, to: { sessionId: to.sessionId, ...(far ? { where: to.where } : {}) }, text },
-      block: { id, from: "‘" + (source?.title ?? "") + "’ (" + (source ? client[source.client] : "") + (far ? ", 프로젝트 " + far.projectName : "") + ")", kind: said[item.kind], text },
+      transfer: { id: mark, at: now, from: { sessionId: item.sessionId, itemId: item.id, start, end, ...(far ? { where: far } : {}) }, to: { sessionId: to.sessionId, ...(far ? { where: to.where } : {}) }, text },
+      block: { id: mark, from: "‘" + (source?.title ?? "") + "’ (" + (source ? client[source.client] : "") + (far ? ", 프로젝트 " + far.projectName : "") + ")", kind: said[item.kind], text },
     });
   }
   return out;
@@ -392,7 +394,8 @@ export function serve(port: number, webDir: string): Served {
         }
         // something that was said and then taken back: it is in no snapshot, and is read as a whole all the same
         for (const made of newestFirst()) {
-          for (const stretches of made.gone.values()) for (const stretch of stretches) for (const item of stretch) if (item.id === id) return send(200, item);
+          const item = made.left.get(id);
+          if (item) return send(200, item);
         }
         return send(404, { error: "그런 조각이 없습니다" });
       }
@@ -477,11 +480,19 @@ export function serve(port: number, webDir: string): Served {
         // Where a piece came from and where it went: the stretch of an item from start to end, followed both ways.
         const made = built.get(url.searchParams.get("project") ?? "") ?? (await read(url.searchParams.get("project") ?? ""));
         if (!made) return send(404, { error: "그런 프로젝트가 없습니다" });
-        const item = made.bodies.get(url.searchParams.get("item") ?? "");
+        const wanted = url.searchParams.get("item") ?? "";
+        const item = made.bodies.get(wanted) ?? made.left.get(wanted);
         if (!item) return send(404, { error: "그런 조각이 없습니다" });
         const start = Math.max(0, Number(url.searchParams.get("start") ?? 0) || 0);
         const end = Math.min(item.text.length, Number(url.searchParams.get("end") ?? item.text.length) || item.text.length);
-        return send(200, { steps: tracePiece({ sessionId: item.sessionId, itemId: item.id, start, end }, made.snapshot.links, made.bodies, made.snapshot.sessions, made.snapshot.far ?? []) });
+        const steps = tracePiece({ sessionId: item.sessionId, itemId: item.id, start, end }, made.snapshot.links, made.bodies, made.snapshot.sessions, made.snapshot.far ?? [], made.left);
+        // left: the stops of the way that lie in what a session left behind (they are in no snapshot): what each is, and when it was said
+        const left: Record<string, { kind: string; at: number }> = {};
+        for (const id of [item.id, ...steps.flatMap((step) => [step.link.from.itemId, step.link.to.itemId])]) {
+          const one = id ? made.left.get(id) : undefined;
+          if (one) left[one.id] = { kind: one.kind, at: one.at };
+        }
+        return send(200, { steps, left });
       }
       if (url.pathname === "/api/turn/active") {
         // The turn this tool is running in a session, if any: a screen opened in the middle of one joins it.

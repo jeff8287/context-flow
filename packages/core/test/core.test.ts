@@ -1285,6 +1285,40 @@ test("a fork's line says which request of its parent it was made before, for a f
   assert.deepEqual(into("base:4"), ["codex-end", "codex-lost", "unsaid"]);
 });
 
+test("a piece cut from what a session left behind goes where it was sent, and is followed there and no further out of its session", () => {
+  const LEFT = "고치기 전의 답에만 있던 문단입니다. 좌석을 누르면 곧바로 예약하게 하면 확인 단계가 없어서, 잘못 누른 좌석도 그대로 예약됩니다.";
+  // a: a talk of two turns; between them, an answer that was said and then left behind (its request was said again)
+  const talk = [say("a", 0, "prompt", 100_000, "배치도를 만들어줘"), say("a", 1, "answer", 110_000, "만들었습니다"),
+    say("a", 1_000_000, "prompt", 300_000, "누르면 폼에 골라지게만 해줘"), say("a", 1_000_001, "answer", 310_000, "그렇게 했습니다. " + LEFT)]; // (it says the same again, later)
+  const behind = say("a", 3, "answer", 210_000, LEFT);
+  const left = new Map([[behind.id, behind]]);
+  // the piece is sent to b, and back to a itself; what a said later is sent to c; d is a fork of a
+  const sent = (id: string, to: string, from: Item) => ({ id, at: 900_000, from: { sessionId: "a", itemId: from.id, start: from.text.indexOf(LEFT), end: from.text.indexOf(LEFT) + LEFT.length }, to: { sessionId: to }, text: LEFT });
+  const got = (session: string, n: number, at: number, id: string) => say(session, n, "prompt", at, withPieces("이것을 참고해줘", [{ id, from: "‘a’ (Codex)", kind: "답변", text: LEFT }]));
+  const items = [...talk, got("b", 0, 1_000_000, "cf1"), got("a", 2_000_000, 1_100_000, "cf2"), got("c", 0, 1_200_000, "cf3"), say("d", 0, "prompt", 1_300_000, "갈라진 쪽의 요청")];
+  const transfers: Transfer[] = [sent("cf1", "b", behind), sent("cf2", "a", behind), sent("cf3", "c", talk[3])];
+  const sessions = [session("a", { startedAt: 100_000 }), session("b", { startedAt: 1_000_000 }), session("c", { startedAt: 1_200_000 }), session("d", { origin: "fork", parentId: "a", startedAt: 1_300_000 })];
+  const links = [...recordedLinks(sessions).links, ...transferLinks(transfers, items, left)];
+  // the lines are drawn as for any piece; the one out of what was left behind is said to have been said when that was
+  const line = (id: string) => links.find((link) => link.id === "transfer:" + id)!;
+  assert.deepEqual([line("cf1").from.itemId, line("cf1").from.at, line("cf1").to.itemId], ["a:3", 210_000, "b:0"]);
+  assert.deepEqual([line("cf2").from.sessionId, line("cf2").to.sessionId, line("cf2").to.itemId], ["a", "a", "a:2000000"]); // back into the session that left it behind
+  assert.equal(transferLinks(transfers, items).find((link) => link.id === "transfer:cf1")!.from.at, 900_000); // (when it is not known: when it was sent)
+  const bodies = new Map(items.map((item) => [item.id, item]));
+  const way = (piece: Item, dir: "back" | "onward", known = left, among = links) => tracePiece({ sessionId: piece.sessionId, itemId: piece.id, start: 0, end: piece.text.length }, among, bodies, sessions, [], known).filter((step) => step.dir === dir).map((step) => step.link.id).sort();
+  // From what was left behind: to where the piece itself was sent. Not on with what the session said later (though
+  // that holds the same words), and not into the fork: the session had it no more.
+  assert.deepEqual(way(behind, "onward", left, links.filter((link) => link.id !== "transfer:cf2")), ["transfer:cf1"]);
+  // Sent back into its own session, it is in that session's talk again from then on: the fork made after that has it.
+  assert.deepEqual(way(behind, "onward"), ["fork:a>d", "transfer:cf1", "transfer:cf2"]);
+  // from the same words as the session said them later, in its talk: on with what was cut from there, and into the fork
+  assert.deepEqual(way(talk[3], "onward"), ["fork:a>d", "transfer:cf3"]);
+  // where it arrived, the way back is the piece's own; without what was left behind there are no words to know it by
+  assert.deepEqual(way(items[4], "back"), ["transfer:cf1"]);
+  assert.deepEqual(way(items[4], "back", new Map()), []);
+  assert.deepEqual(way(behind, "onward", new Map()), []); // and it is no item at all
+});
+
 test("a Codex thread whose request was said again in the app is read back through its files; a file is named by an id of its own", async () => {
   // As Codex keeps them: a folder for each day, a file named by when it was begun and the thread, and (for a file
   // begun when a request was said again) an id of its own at the end.

@@ -8,7 +8,7 @@
 import { colorOf, el, h, owner, state, top, type Held } from "./state.ts";
 
 /** A piece as it is carried: where it was cut from and what it says. It is kept in the basket only when it lands. */
-export type Spec = Pick<Held, "sessionId" | "itemId" | "start" | "end" | "text" | "kind" | "where">;
+export type Spec = Pick<Held, "sessionId" | "itemId" | "start" | "end" | "text" | "kind" | "where" | "left">;
 /** Where it landed: on a session, or on the empty map (a session to be begun). */
 export type Drop = { session: string } | { fresh: true };
 
@@ -23,8 +23,8 @@ const home = (id: string) => owner(id)?.id ?? id;
 function landing(x: number, y: number, specs: Spec[], floating: boolean): { drop: Drop; node: HTMLElement } | null {
   const session = (id: string | undefined, node: HTMLElement) => {
     const found = id ? state.sessions.get(id) : undefined;
-    // a session takes pieces of other sessions: its own words it has already
-    if (!found || !top(found) || found.activity === "archived" || specs.every((spec) => home(spec.sessionId) === found.id)) return null;
+    // a session takes pieces of other sessions: its own words it has already (but for those it left behind)
+    if (!found || !top(found) || found.activity === "archived" || specs.every((spec) => home(spec.sessionId) === found.id && !spec.left)) return null;
     return { drop: { session: found.id }, node };
   };
   for (const node of document.elementsFromPoint(x, y) as HTMLElement[]) {

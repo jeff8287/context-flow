@@ -1,7 +1,7 @@
 // The screen, laid out like a chat app: sessions in a sidebar, switched on and off there; the ones that are on drawn
 // on a map with what ties them; a session's talk opened from the map.
 import { readBundle, type Bundle } from "../../core/src/bundle.ts";
-import type { Piece, Project, Session, Snapshot, TraceStep } from "../../core/src/model.ts";
+import type { ItemKind, Piece, Project, Session, Snapshot, TraceStep } from "../../core/src/model.ts";
 import { closeChat, drawChat, drawEdge, drawNew, drawTrace } from "./chat.ts";
 import { drawLanes } from "./lanes.ts";
 import { drawMap, fitMap, focusMap, spotsOf, stepZoom, tidyMap } from "./map.ts";
@@ -254,8 +254,8 @@ function openEdge(from: string, to: string | null) {
 /** Follow a piece back to where it first appeared and onward to where it went, and show the way. */
 async function openTrace(piece: Piece, text: string) {
   const query = "project=" + encodeURIComponent(project) + "&item=" + encodeURIComponent(piece.itemId) + "&start=" + piece.start + "&end=" + piece.end;
-  const { steps } = await call<{ steps: TraceStep[] }>("/api/trace?" + query).catch(() => ({ steps: [] as TraceStep[] }));
-  state.trace = { piece, text, steps, shown: true };
+  const { steps, left } = await call<{ steps: TraceStep[]; left?: Record<string, { kind: ItemKind; at: number }> }>("/api/trace?" + query).catch(() => ({ steps: [] as TraceStep[], left: undefined }));
+  state.trace = { piece, text, steps, shown: true, ...(left ? { left } : {}) };
   state.fresh = null;
   // every session on the way goes on the map, so that the way can be seen there
   for (const id of [piece.sessionId, ...steps.flatMap((step) => [step.link.from.sessionId, step.link.to.sessionId])]) {

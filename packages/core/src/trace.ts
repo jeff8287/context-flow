@@ -21,7 +21,10 @@ function shares(a: string, b: string): boolean {
 
 /** far: the pieces that went between these sessions and sessions of projects that are not on the map. The way is
  *  followed as far as such a piece, and the step says what its other end is. */
-export function tracePiece(piece: Piece, links: Link[], bodies: Map<string, Item>, sessions: Session[], far: FarLink[] = []): TraceStep[] {
+/** left: what the sessions said and then left behind (a request of theirs was said again, or their talk was taken
+ *  back). A piece cut from there went where it was sent and nowhere else: its session has it no more, so nothing the
+ *  session said later, and no fork of it, is taken to carry it on. */
+export function tracePiece(piece: Piece, links: Link[], bodies: Map<string, Item>, sessions: Session[], far: FarLink[] = [], left: Map<string, Item> = new Map()): TraceStep[] {
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const topOf = (id: string): string => {
     let session = byId.get(id);
@@ -31,7 +34,7 @@ export function tracePiece(piece: Piece, links: Link[], bodies: Map<string, Item
   const moved = links.filter((link) => link.kind === "transfer" || link.kind === "paste");
   const whole = links.filter((link) => link.kind === "fork" || link.kind === "import");
   const cut = (itemId: string | undefined, start?: number, end?: number) => {
-    const item = itemId ? bodies.get(itemId) : undefined;
+    const item = itemId ? bodies.get(itemId) ?? left.get(itemId) : undefined;
     if (!item) return "";
     return flat(start !== undefined && end !== undefined ? item.text.slice(start, end) : item.text, item.kind).text;
   };
@@ -46,7 +49,7 @@ export function tracePiece(piece: Piece, links: Link[], bodies: Map<string, Item
   const place = (one: FarLink) => ({ project: one.other.project, projectName: one.other.projectName, title: one.other.title, client: one.other.client, sessionId: one.other.sessionId });
   const brought = (one: FarLink) => flat(one.excerpt, "answer").text;
   const steps: TraceStep[] = [];
-  const start = bodies.get(piece.itemId);
+  const start = bodies.get(piece.itemId) ?? left.get(piece.itemId);
   if (!start) return steps;
   const text = cut(piece.itemId, piece.start, piece.end);
 
@@ -73,12 +76,13 @@ export function tracePiece(piece: Piece, links: Link[], bodies: Map<string, Item
 
   // onward: what left this session, from the piece itself or from something said later that holds its text
   const seenOn = new Set<string>();
-  const onward = (session: string, at: number, held: string, depth: number, own?: Piece) => {
+  // only: nothing but the piece itself is followed out of its session (it was left behind there)
+  const onward = (session: string, at: number, held: string, depth: number, own?: Piece, only = false) => {
     if (depth > DEEP) return;
     for (const link of moved) {
       if (seenOn.has(link.id) || topOf(link.from.sessionId) !== session) continue;
       const same = own && link.from.itemId === own.itemId && (link.from.start ?? 0) < own.end && (link.from.end ?? Infinity) > own.start;
-      if (!same && (link.from.at < at || link.from.itemId === own?.itemId || !shares(held, carried(link)))) continue;
+      if (!same && (only || link.from.at < at || link.from.itemId === own?.itemId || !shares(held, carried(link)))) continue;
       seenOn.add(link.id);
       steps.push({ dir: "onward", depth, link });
       // the piece now lies in the prompt that took it: anything cut from that prompt, or said after it, may carry it on
@@ -88,10 +92,11 @@ export function tracePiece(piece: Piece, links: Link[], bodies: Map<string, Item
     for (const one of far) {
       if (one.dir !== "out" || seenOn.has(one.id) || topOf(one.sessionId) !== session) continue;
       const same = own && one.itemId === own.itemId && (one.start ?? 0) < own.end && (one.end ?? Infinity) > own.start;
-      if (!same && (one.at < at || one.itemId === own?.itemId || !shares(held, brought(one)))) continue;
+      if (!same && (only || one.at < at || one.itemId === own?.itemId || !shares(held, brought(one)))) continue;
       seenOn.add(one.id);
       steps.push({ dir: "onward", depth, link: beyond(one), far: place(one) });
     }
+    if (only) return;
     for (const link of whole) {
       if (seenOn.has(link.id) || topOf(link.from.sessionId) !== session) continue;
       // A fork has what its parent had said before the request it was made before, however long after that it was
@@ -104,6 +109,6 @@ export function tracePiece(piece: Piece, links: Link[], bodies: Map<string, Item
       onward(topOf(link.to.sessionId), link.to.at, held, depth + 1);
     }
   };
-  onward(topOf(piece.sessionId), start.at, text, 1, piece);
+  onward(topOf(piece.sessionId), start.at, text, 1, piece, left.has(piece.itemId));
   return steps;
 }

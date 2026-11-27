@@ -302,6 +302,35 @@ test("a talk that went one way and then another is given with what was left behi
       }
       assert.match(said[1]?.text ?? "", /요청 1개와 그 답까지를 물려받았/, name);
     }
+    // A piece is cut from what was left behind as from anything else that was said, and is sent on: to another
+    // session, and to the very session that left it behind, which has it no more.
+    const map = SESSIONS.map;
+    const behind = (await talk(map.id)).gone[0].items.find((item) => item.kind === "answer")!;
+    const piece = { sessionId: map.id, itemId: behind.id, start: 0, end: behind.text.length };
+    for (const to of [SESSIONS.form.id, map.id]) {
+      const sent = await post("/api/send", { project: PROJECTS.web.id, session: to, text: "고치기 전의 답도 참고해줘", pieces: [piece] });
+      assert.equal(sent.status, 200, JSON.stringify(sent.body));
+      for (let tries = 0; tries < 40; tries += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (!(await (await fetch(at + "/api/turn/active?session=" + to)).json()).turn) break;
+      }
+      const said = (await talk(to)).items;
+      assert.match(said.at(-1)?.text ?? "", /함께 받은 조각 1개/); // the stand-in says back what it was given
+    }
+    // each arrived, and is a line from where it was cut; the session's own is in the talk it was sent back into
+    const snap = (await (await fetch(at + "/api/snapshot?project=" + PROJECTS.web.id)).json()) as Snapshot;
+    const lines = snap.links.filter((link) => link.kind === "transfer" && link.from.itemId === behind.id);
+    assert.deepEqual(lines.map((link) => link.to.sessionId).sort(), [map.id, SESSIONS.form.id].sort());
+    assert.ok(!snap.items.some((item) => item.id === behind.id)); // it is still of no talk
+    // followed from where it was cut, it went to those two; followed back from where it arrived, it came from there
+    const way = async (item: string) => (await (await fetch(at + "/api/trace?project=" + PROJECTS.web.id + "&item=" + encodeURIComponent(item))).json()) as { steps: { dir: string; link: { id: string } }[]; left: Record<string, { kind: string; at: number }> };
+    const from = await way(behind.id);
+    assert.deepEqual(from.steps.filter((step) => step.dir === "onward").map((step) => step.link.id).sort(), lines.map((link) => link.id).sort());
+    assert.deepEqual(from.left, { [behind.id]: { kind: "answer", at: from.left[behind.id]?.at } });
+    const arrived = lines.find((link) => link.to.sessionId === SESSIONS.form.id)!;
+    const back = await way(arrived.to.itemId!);
+    assert.deepEqual(back.steps.filter((step) => step.dir === "back").map((step) => step.link.id), [arrived.id]);
+    assert.equal(back.left[behind.id]?.kind, "answer");
   } finally {
     await served.close();
   }

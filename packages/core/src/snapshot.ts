@@ -15,9 +15,11 @@ export interface Built {
   snapshot: Snapshot;
   /** The text of every item, by id: handed out one at a time, never with the snapshot. */
   bodies: Map<string, Item>;
-  /** For a session: what was said in it and then taken back, a stretch at a time. It is in no snapshot and ties
-   *  nothing; a session's talk is given with it, to be looked at. */
+  /** For a session: what was said in it and then taken back, a stretch at a time. It is in no snapshot, is not
+   *  counted and is not looked through for pasted text; a session's talk is given with it. */
   gone: Map<string, Item[][]>;
+  /** Every item of those stretches, by id: a piece can be cut from one and sent on, as from any other item. */
+  left: Map<string, Item>;
 }
 
 /** What a prompt asks, for its label: the desktop app puts the files and the selection it attaches before the request itself. */
@@ -178,7 +180,9 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
   const recorded = recordedLinks(sessions, before);
   if (recorded.outside) notes.push("부모가 " + (many ? "이 프로젝트들" : "이 프로젝트") + " 밖에 있는 세션 " + recorded.outside + "개는 연결 없이 그렸습니다.");
   const here = new Set(sessions.map((session) => session.id));
-  const sent = transferLinks(transfers.filter((transfer) => here.has(transfer.from.sessionId) && here.has(transfer.to.sessionId)), items);
+  const left = new Map<string, Item>();
+  for (const stretches of gone.values()) for (const stretch of stretches) for (const item of stretch) left.set(item.id, item);
+  const sent = transferLinks(transfers.filter((transfer) => here.has(transfer.from.sessionId) && here.has(transfer.to.sessionId)), items, left);
   const pasted = pasteLinks(items, sessions, whole.id, before);
   notes.push("점선 화살표(붙여넣기)는 기록에 남은 것이 아니라 글자를 견줘 찾은 것입니다: 요청에 친 글 가운데 80자 이상이, 다른 세션이 그보다 먼저 한 답변이나 변경과 같을 때. 파일에서 직접 복사한 글도 잡힐 수 있습니다.");
   const bodies = new Map(items.map((item) => [item.id, item]));
@@ -186,6 +190,7 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
     snapshot: { version: 1, madeAt: now, project: whole, ...(many ? { projects: projects.map((one) => ({ id: one.id, name: one.name, roots: one.roots })) } : {}), sessions, items: items.map(head), links: [...recorded.links, ...sent, ...pasted], waiting: waitingOf(pending, sessions, items), far: farLinks(transfers, sessions, items), hooks: hookStates(), overlaps: overlaps(items, whole), notes },
     bodies,
     gone,
+    left,
   };
 }
 
