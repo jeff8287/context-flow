@@ -403,11 +403,14 @@ test("from a map, a session is begun in a folder outside its projects, chosen fr
     assert.deepEqual([top.of, top.git, Array.isArray(top.near)], [undefined, true, true]);
     // the top folder, and a folder that is not there, are refused
     for (const cwd of ["/", join(made, "nowhere")]) assert.equal((await post("/api/new", { project: PROJECTS.api.id, client: "claude", text: "x", cwd })).status, 400);
-    // a folder of another project of the sidebar: the session is that project's, and nothing is kept
-    const there = await post("/api/new", { project: PROJECTS.api.id, client: "codex", text: "다른 프로젝트 폴더에서", cwd: PROJECTS.web.root });
+    // a folder of another project of the sidebar: the session is that project's, and nothing is kept. It runs like the
+    // nearest Codex session, but with a model chosen apart from that session's
+    const there = await post("/api/new", { project: PROJECTS.api.id, client: "codex", text: "다른 프로젝트 폴더에서", cwd: PROJECTS.web.root, model: "demo-codex-mini" });
     assert.equal(there.status, 200, JSON.stringify(there.body));
-    assert.equal(there.body.project?.id, PROJECTS.web.id);
+    assert.deepEqual([there.body.project?.id, there.body.model], [PROJECTS.web.id, "demo-codex-mini"]);
     await done(there.body.session);
+    const web = await get("/api/snapshot?project=" + PROJECTS.web.id);
+    assert.equal(web.sessions.find((one: { id: string }) => one.id === there.body.session)?.model, "demo-codex-mini");
     // the new repository, with a piece of this map along: the session is of a project of its own, its work tree
     const snap = await get("/api/snapshot?project=" + PROJECTS.api.id);
     const answer = (snap.items as { id: string; sessionId: string; kind: string; size: number }[]).find((item) => item.sessionId === SESSIONS.tests.id && item.kind === "answer")!;

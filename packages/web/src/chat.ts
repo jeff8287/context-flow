@@ -1976,10 +1976,11 @@ function tuneNew() {
     where.textContent = CLIENT[fresh.client] + " · " + browsing.shown + "에서 시작";
     where.title = browsing.path;
   }
-  // the folder and the model: what was worked out is shown as chosen, and can be changed
+  // the folder and the session run like (what it may do without asking): what was worked out is shown as chosen, and
+  // can be changed
   const folder = pane().querySelector<HTMLSelectElement>(".fresh-folder");
-  const model = pane().querySelector<HTMLSelectElement>(".fresh-model");
-  if (plan && folder && model) {
+  const like = pane().querySelector<HTMLSelectElement>(".fresh-like");
+  if (plan && folder && like) {
     const option = (value: string, label: string, tip: string) => { const made = h("option", "", label); made.value = value; made.title = tip; return made; };
     // the project's folders, and last a folder from the disk: one that is in no project is then a project of its own
     const own = [...new Set([...(fresh.away ? [] : [plan.cwd]), ...plan.folders])].sort().map((path) => option(path, folderName(path), path));
@@ -1987,32 +1988,45 @@ function tuneNew() {
     folder.value = fresh.away ? OTHER : plan.cwd;
     folder.disabled = starting;
     const likes = plan.like && !plan.likes.some((one) => one.id === plan.like!.id) ? [plan.like, ...plan.likes] : plan.likes;
-    model.replaceChildren(...likes.map((one) => option(one.id, one.model ?? "(모델 표시 없음)", "‘" + one.title + "’처럼: 그 세션의 모델과 권한")), option("none", CLIENT[fresh.client] + " 기본 설정", "따르는 세션 없이, 그 클라이언트의 기본 모델과 권한으로"));
-    model.value = plan.like?.id ?? "none";
-    model.disabled = starting;
+    like.replaceChildren(...likes.map((one) => option(one.id, "‘" + flat(one.title, 22) + "’처럼", "‘" + one.title + "’의 승인과 샌드박스로. 모델을 따로 고르지 않으면 그 세션의 모델" + (one.model ? "(" + one.model + ")" : "") + "도 따릅니다")), option("none", CLIENT[fresh.client] + " 기본 설정", "따르는 세션 없이, 그 클라이언트에 설정된 승인과 샌드박스로"));
+    like.value = plan.like?.id ?? "none";
+    like.disabled = starting;
   }
   const browse = pane().querySelector<HTMLElement>(".browse");
   if (browse && !first) browse.hidden = !fresh.away;
-  // a first session's model: its client's own, or one of those the client offers
-  const firstModel = pane().querySelector<HTMLSelectElement>(".first-model");
-  if (first && firstModel) {
+  // The model, chosen apart from the session run like: by default that session's (or, running like none, the
+  // client's own); else one the client offers, or one its sessions on the map were seen to run on.
+  const pick = pane().querySelector<HTMLSelectElement>(".fresh-model");
+  const own = plan?.like?.model ?? null;
+  if (pick && (first || plan)) {
     askModels(fresh.client, () => { if (state.fresh === fresh) tune(); });
-    const models = offered.get(fresh.client) ?? [];
-    if (fresh.model && !models.some((one) => one.id === fresh.model)) fresh.model = undefined;
-    const drawn = JSON.stringify([fresh.client, ...models.map((one) => one.id)]);
-    if (firstModel.dataset.drawn !== drawn) {
+    const names = new Map<string, string>();
+    for (const one of offered.get(fresh.client) ?? []) names.set(one.id, one.name === one.id ? one.id : one.name + " · " + one.id);
+    for (const other of [...state.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt)) if (other.client === fresh.client && other.model && !names.has(other.model)) names.set(other.model, other.model);
+    if (own) names.delete(own);
+    if (fresh.model && fresh.model !== own && !names.has(fresh.model)) fresh.model = undefined;
+    // (the model's own name first: the session it is taken from is named in the box beside, and in the note below)
+    const ownLabel = plan?.like ? (own ? own + " · 따르는 세션의 모델" : "따르는 세션의 모델") : CLIENT[fresh.client] + " 기본 모델";
+    const drawn = JSON.stringify([ownLabel, ...names]);
+    if (pick.dataset.drawn !== drawn) {
       // (drawn again only when the choices changed, so that a list that is open is not shut under the hand)
-      firstModel.dataset.drawn = drawn;
-      const own = h("option", "", CLIENT[fresh.client] + " 기본 모델");
-      own.value = "";
-      own.title = "고르지 않으면 그 클라이언트에 설정된 기본 모델로 시작합니다";
-      firstModel.replaceChildren(own, ...models.map((one) => { const made = h("option", "", one.name === one.id ? one.id : one.name + " · " + one.id); made.value = one.id; return made; }));
+      pick.dataset.drawn = drawn;
+      const head = h("option", "", ownLabel);
+      head.value = "";
+      head.title = plan?.like ? "따르는 세션의 모델로 시작합니다" : "그 클라이언트에 설정된 기본 모델로 시작합니다";
+      pick.replaceChildren(head, ...[...names].map(([id, name]) => { const made = h("option", "", name); made.value = id; return made; }));
     }
-    firstModel.value = fresh.model ?? "";
-    firstModel.disabled = held;
+    pick.value = fresh.model && fresh.model !== own ? fresh.model : "";
+    pick.disabled = held;
   }
+  const chosen = fresh.model && fresh.model !== own ? fresh.model : null;
   const note = pane().querySelector<HTMLElement>(".fresh-note");
-  if (note) note.textContent = !state.clients[fresh.client] ? "이 컴퓨터에서 " + CLIENT[fresh.client] + "를 찾지 못해 시작할 수 없습니다." : plan?.like ? "모델과 권한(승인, 샌드박스)은 ‘" + flat(plan.like.title, 28) + "’ 세션을 따릅니다." : first && fresh.model ? fresh.model + " 모델로, 권한(승인, 샌드박스)은 " + CLIENT[fresh.client] + "의 기본 설정으로 시작합니다." : CLIENT[fresh.client] + "의 기본 모델과 권한으로 시작합니다.";
+  if (note) {
+    note.textContent = !state.clients[fresh.client] ? "이 컴퓨터에서 " + CLIENT[fresh.client] + "를 찾지 못해 시작할 수 없습니다."
+      : plan?.like ? (chosen ? "모델은 " + chosen + ", 권한(승인, 샌드박스)은 ‘" + flat(plan.like.title, 28) + "’ 세션을 따릅니다." : "모델과 권한(승인, 샌드박스)은 ‘" + flat(plan.like.title, 28) + "’ 세션을 따릅니다.")
+      : chosen ? chosen + " 모델로, 권한(승인, 샌드박스)은 " + CLIENT[fresh.client] + "의 기본 설정으로 시작합니다."
+      : CLIENT[fresh.client] + "의 기본 모델과 권한으로 시작합니다.";
+  }
   pane().querySelectorAll<HTMLElement>(".client").forEach((one) => one.classList.toggle("on", one.dataset.client === fresh.client));
   // what the new session will be given besides the request: the pieces attached, each in the colour of where it came from
   const list = pane().querySelector<HTMLElement>(".fresh-pieces");
@@ -2069,7 +2083,7 @@ async function startNew() {
     const files = await wireFiles(going);
     const asked = first
       ? { client: fresh.client, text, cwd: fresh.cwd, ...(fresh.model ? { model: fresh.model } : {}), ...(files.length ? { files } : {}) }
-      : { project: state.snap!.project.id, client: fresh.client, text, pieces, cwd: plan?.cwd, like: plan ? plan.like?.id ?? "none" : undefined, ...(files.length ? { files } : {}) };
+      : { project: state.snap!.project.id, client: fresh.client, text, pieces, cwd: plan?.cwd, like: plan ? plan.like?.id ?? "none" : undefined, ...(fresh.model ? { model: fresh.model } : {}), ...(files.length ? { files } : {}) };
     const made = await post<{ turn: string; session: string; cwd: string; project?: Project }>("/api/new", asked);
     box.value = "";
     picked = [];
@@ -2172,6 +2186,7 @@ export function drawNew() {
     field.append(h("span", "", label), select);
     return field;
   };
+  const model = choose("fresh-model", "모델", "새 세션의 모델. 고르지 않으면 따르는 세션의 모델이고, 따르는 세션이 없으면 그 클라이언트의 기본 모델입니다", (value) => { fresh.model = value || undefined; });
   ways.append(
     choose("fresh-folder", "폴더", "새 세션이 일할 폴더. 고르지 않으면 첫 조각이 나온 세션의 폴더입니다", (value) => {
       fresh.like = undefined;
@@ -2185,12 +2200,13 @@ export function drawNew() {
       fresh.away = true;
       void (browsing ? goFolder(browsing.path) : goFolder(besideProject(), true));
     }),
-    choose("fresh-model", "모델", "새 세션의 모델. 고른 모델을 쓰던 세션의 권한도 함께 따릅니다", (value) => { fresh.like = value; }),
   );
-  const firstWays = h("div", "fresh-ways");
-  firstWays.append(choose("first-model", "모델", "첫 세션의 모델. 고르지 않으면 그 클라이언트의 기본 모델입니다. 권한(승인, 샌드박스)은 그 클라이언트의 기본 설정입니다", (value) => { fresh.model = value || undefined; }));
-  if (first) body.append(pick, firstWays, h("div", "browse"), h("p", "fresh-note", ""));
-  else body.append(pick, ways, h("div", "browse"), h("p", "fresh-note", ""), h("div", "fresh-pieces"));
+  // the model and what it may do without asking, chosen apart; a first session has no session to run like
+  const how = h("div", "fresh-ways");
+  how.append(model);
+  if (!first) how.append(choose("fresh-like", "권한", "새 세션의 승인과 샌드박스: 어느 세션처럼 할지, 또는 그 클라이언트의 기본 설정. 모델을 따로 고르지 않으면 그 세션의 모델도 따릅니다", (value) => { fresh.like = value; }));
+  if (first) body.append(pick, how, h("div", "browse"), h("p", "fresh-note", ""));
+  else body.append(pick, ways, h("div", "browse"), how, h("p", "fresh-note", ""), h("div", "fresh-pieces"));
   const form = h("form", "composer");
   const basket = h("div", "basket");
   const row = h("div", "composer-row");
