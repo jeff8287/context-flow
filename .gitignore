@@ -4,3 +4,4 @@ dist/
 # the made-up records of the demo: made again each time it is started
 demo/home/
 demo/home-test-*/
+demo/home-shots/

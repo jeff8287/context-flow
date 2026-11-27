@@ -1,12 +1,12 @@
 // npm run demo: makes the demo's records and serves the screen on them, with stand-ins for the two clients.
 // Nothing of the person's own is read or written: the tool is pointed at demo/home for everything.
 //   --port N   the port to serve on (8802 unless said; a real install uses 8801)
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { serve } from "../packages/core/src/server.ts";
-import { make, unfit } from "./make.ts";
-import { CLAUDE, PROJECTS, ROOT, SESSIONS, useDemoHomes, useStandIns } from "./world.ts";
+import { unfit } from "./make.ts";
+import { stage } from "./stage.ts";
+import { PROJECTS, ROOT } from "./world.ts";
 
 process.removeAllListeners("warning"); // node:sqlite still announces itself as experimental
 const args = process.argv.slice(2);
@@ -21,22 +21,7 @@ if (why) {
   console.error(why);
   process.exit(1);
 }
-useDemoHomes();
-const made = await make();
-
-// The two clients are stood in for by demo/agent.ts.
-useStandIns();
-
-// Two sessions are in the middle of something: one at work, one stopped until it is allowed to run a command. Claude
-// Code says so in a small file for each of its live processes; here this process and a helper that only waits stand
-// for those two.
-const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
-process.on("exit", () => helper.kill());
-mkdirSync(join(CLAUDE, "sessions"), { recursive: true });
-const live = (pid: number, sessionId: string, status: string, waitingFor?: string) =>
-  writeFileSync(join(CLAUDE, "sessions", pid + ".json"), JSON.stringify({ pid, sessionId, status, ...(waitingFor ? { waitingFor } : {}), statusUpdatedAt: Date.now() }));
-live(process.pid, SESSIONS.batch.id, "busy");
-if (helper.pid) live(helper.pid, SESSIONS.dedupe.id, "waiting", "permission prompt");
+const made = await stage();
 
 serve(port, dist);
 const url = "http://127.0.0.1:" + port + "/?project=";

@@ -308,6 +308,9 @@ npm run service -- uninstall    # 내리고 그 파일을 지웁니다
 npm run check     # 타입 검사 (코어, 화면, 데모)
 npm test          # 시험 58개. 모두 지어낸 기록으로 돕니다
 npm run build     # 화면 빌드
+npm run demo:shots   # docs/img의 데모 그림을 지금 화면으로 다시 찍기
 ```
+
+`demo:shots`는 데모를 자기 기록 폴더(`demo/home-shots`)로 띄우고, 헤드리스 Chrome으로 [DEMO.md](DEMO.md)의 단계를 차례대로 눌러 가며 그림 32장을 `docs/img`에 씁니다. 2~3분 걸립니다. Chrome이나 Chromium이 있어야 하고, 흔히 있는 자리에 없으면 `CONTEXT_FLOW_CHROME=<실행 파일 경로>`로 알려 줍니다. 어느 단계가 문서대로 나오지 않으면 멈추고, 멈춘 곳의 화면을 임시 폴더에 남깁니다. 그래서 화면을 고친 뒤 이 명령이 끝까지 돌면 데모 따라 하기가 여전히 문서대로 된다는 뜻이기도 합니다. 설치를 묻는 브라우저의 창(`28-install.png`)과 서버가 꺼진 화면(`29-server-off.png`)은 헤드리스 브라우저에 뜨지 않아 손으로 찍습니다.
 
 화면을 고치면서 볼 때는 `packages/web`에서 `npx vite`를 돌리고, 서버는 따로 `npm run serve`로 띄웁니다. 코드가 어디에 있는지는 [ARCHITECTURE.md](ARCHITECTURE.md)에 있습니다.
