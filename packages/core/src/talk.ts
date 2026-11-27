@@ -15,6 +15,11 @@ import type { Client, Session, TurnEvent } from "./model.ts";
  *  what it may do without asking); with none to go by, the client's own defaults. */
 export interface Fresh { client: Client; cwd: string; like: Session | null }
 
+/** What goes with a request besides its words. images: pictures, as files on this machine. dirs: folders the agent
+ *  is let read without asking (the other files that were sent along lie there). model: the model to answer with,
+ *  when it is not to be the session's own; the session goes on with it afterwards, as when it is changed in the client. */
+export interface Along { images?: { path: string; type: string }[]; dirs?: string[]; model?: string }
+
 /** Where a turn runs. id: the session's, or null for a Codex thread that is yet to be given one. */
 interface Where { id: string | null; fresh: boolean; cwd: string; recordPath: string | null; model: string | null }
 
@@ -63,7 +68,7 @@ function lastTurnContext(recordPath: string | null): Record<string, any> {
   return {};
 }
 
-function runCodex(session: Where, prompt: string, emit: Emit, named: (id: string) => void): Runner {
+function runCodex(session: Where, prompt: string, along: Along, emit: Emit, named: (id: string) => void): Runner {
   const context = lastTurnContext(session.recordPath);
   let threadId = session.id;
   const child = spawn(codexBin(), ["app-server"], { cwd: session.cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -116,7 +121,7 @@ function runCodex(session: Where, prompt: string, emit: Emit, named: (id: string
       send({ method: "initialized", params: {} });
       const sandbox = typeof context.sandbox_policy === "string" ? context.sandbox_policy : context.sandbox_policy?.type;
       const how = {
-        ...(context.model ?? session.model ? { model: context.model ?? session.model } : {}),
+        ...(along.model ?? context.model ?? session.model ? { model: along.model ?? context.model ?? session.model } : {}),
         ...(context.approval_policy ? { approvalPolicy: context.approval_policy } : {}),
         ...(sandbox ? { sandbox } : {}),
         approvalsReviewer: "user", // requests come to the screen, whoever reviewed them before
@@ -130,7 +135,8 @@ function runCodex(session: Where, prompt: string, emit: Emit, named: (id: string
         if (!threadId) return finish(false, "Codex가 새 스레드를 만들지 못했습니다");
         named(threadId);
       }
-      send({ id: 2, method: "turn/start", params: { threadId, input: [{ type: "text", text: prompt, text_elements: [] }], ...(context.effort ? { effort: context.effort } : {}) } });
+      const pictures = (along.images ?? []).map((image) => ({ type: "localImage", path: image.path }));
+      send({ id: 2, method: "turn/start", params: { threadId, input: [{ type: "text", text: prompt, text_elements: [] }, ...pictures], ...(along.model ? { model: along.model } : {}), ...(context.effort ? { effort: context.effort } : {}) } });
     } else if (message.id === 2) {
       turnId = message.result?.turn?.id ?? null;
       if (stopped) stop();
@@ -200,9 +206,11 @@ function claudeAsk(name: string, input: Record<string, any>, cwd: string): strin
   return claudeStep(name, input, cwd).label;
 }
 
-function runClaude(session: Where & { id: string }, prompt: string, emit: Emit): Runner {
+function runClaude(session: Where & { id: string }, prompt: string, along: Along, emit: Emit): Runner {
   const flags = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", session.fresh ? "--session-id" : "--resume", session.id];
-  if (session.model && /^claude-/.test(session.model)) flags.push("--model", session.model);
+  const model = along.model ?? (session.model && /^claude-/.test(session.model) ? session.model : undefined);
+  if (model) flags.push("--model", model);
+  for (const dir of along.dirs ?? []) flags.push("--add-dir", dir);
   const child = spawn(process.env.CONTEXT_FLOW_CLAUDE ?? "claude", flags, { cwd: session.cwd, stdio: ["pipe", "pipe", "pipe"] });
   const send = (message: unknown) => { if (child.stdin.writable) child.stdin.write(JSON.stringify(message) + "\n"); };
   const waiting = new Map<string, { request: string; input: unknown }>();
@@ -219,7 +227,14 @@ function runClaude(session: Where & { id: string }, prompt: string, emit: Emit):
   child.stderr.on("data", (chunk) => { stderr = (stderr + String(chunk)).slice(-2000); });
   child.on("error", (error) => finish(false, "Claude Code를 실행하지 못했습니다: " + error.message));
   child.on("exit", (code) => finish(false, stopped ? "멈췄습니다" : "Claude Code가 답을 끝내기 전에 닫혔습니다 (" + code + ") " + tail(stderr)));
-  send({ type: "user", message: { role: "user", content: [{ type: "text", text: prompt }] } });
+  // a picture is handed over as it is, before the words that are about it
+  const pictures: unknown[] = [];
+  for (const image of along.images ?? []) {
+    try {
+      pictures.push({ type: "image", source: { type: "base64", media_type: image.type, data: readFileSync(image.path).toString("base64") } });
+    } catch { /* it went away since it was kept: the words go without it */ }
+  }
+  send({ type: "user", message: { role: "user", content: [...pictures, { type: "text", text: prompt }] } });
   createInterface({ input: child.stdout }).on("line", (line) => {
     let message: any;
     try {
@@ -266,26 +281,26 @@ function runClaude(session: Where & { id: string }, prompt: string, emit: Emit):
 }
 
 /** Start one turn in a session. The turn runs on whether or not anything listens. */
-export function startTurn(session: Session, prompt: string): Turn {
+export function startTurn(session: Session, prompt: string, along: Along = {}): Turn {
   const where = { id: session.id, fresh: false, cwd: session.cwd, recordPath: session.recordPath, model: session.model };
-  return begin(session.id, prompt, (emit) => (session.client === "codex" ? runCodex(where, prompt, emit, () => {}) : runClaude(where, prompt, emit)));
+  return begin(session.id, prompt, (emit) => (session.client === "codex" ? runCodex(where, prompt, along, emit, () => {}) : runClaude(where, prompt, along, emit)));
 }
 
 /** Begin a new session with a first request. ready: the new session's id, once the client has given it one; it fails
  *  with the reason when the client would not begin. */
-export function startNew(fresh: Fresh, prompt: string): { turn: Turn; ready: Promise<string> } {
+export function startNew(fresh: Fresh, prompt: string, along: Along = {}): { turn: Turn; ready: Promise<string> } {
   const like = fresh.like?.client === fresh.client ? fresh.like : null;
   const where = { fresh: true, cwd: fresh.cwd, recordPath: like?.recordPath ?? null, model: like?.model ?? null };
   if (fresh.client === "claude") {
     const id = randomUUID(); // Claude Code takes the id it is given
-    const turn = begin(id, prompt, (emit) => runClaude({ ...where, id }, prompt, emit));
+    const turn = begin(id, prompt, (emit) => runClaude({ ...where, id }, prompt, along, emit));
     return { turn, ready: Promise.resolve(id) };
   }
   let name: (id: string) => void = () => {};
   let fail: (error: Error) => void = () => {};
   const ready = new Promise<string>((resolve, reject) => { name = resolve; fail = reject; });
   ready.catch(() => {}); // whoever waits for it hears of the failure; nobody waiting is no error
-  const turn: Turn = begin("", prompt, (emit) => runCodex({ ...where, id: null }, prompt, emit, (id) => { turn.sessionId = id; name(id); }));
+  const turn: Turn = begin("", prompt, (emit) => runCodex({ ...where, id: null }, prompt, along, emit, (id) => { turn.sessionId = id; name(id); }));
   const quit = turn.listen((event) => {
     if (event.t !== "done") return;
     quit();
@@ -322,4 +337,43 @@ function begin(sessionId: string, prompt: string, run: (emit: Emit) => Runner): 
   emit({ t: "prompt", text: prompt });
   runner = run(emit);
   return turn;
+}
+
+/** A model that can be chosen for a client. */
+export interface ModelChoice { id: string; name: string }
+
+let codexModels: { at: number; list: ModelChoice[] } | null = null;
+
+/** The models a client offers, as far as it will say. Codex is asked (its app server lists them); Claude Code takes
+ *  the short names of its newest models. What the sessions themselves were seen to run on is added by the screen.
+ *  Never fails: a client that does not answer offers nothing. */
+export async function listModels(client: Client): Promise<ModelChoice[]> {
+  if (client === "claude") return ["opus", "sonnet", "haiku"].map((id) => ({ id, name: id }));
+  if (codexModels && Date.now() - codexModels.at < 10 * 60_000) return codexModels.list;
+  const list = await new Promise<ModelChoice[]>((resolve) => {
+    const child = spawn(codexBin(), ["app-server"], { stdio: ["pipe", "pipe", "ignore"] });
+    const done = (found: ModelChoice[]) => { clearTimeout(late); child.kill(); resolve(found); };
+    const late = setTimeout(() => done([]), 8000);
+    const send = (message: unknown) => { if (child.stdin.writable) child.stdin.write(JSON.stringify(message) + "\n"); };
+    child.on("error", () => done([]));
+    child.on("exit", () => done([]));
+    send({ id: 0, method: "initialize", params: { clientInfo: { name: "context-flow", title: "context flow", version: "0.0.1" } } });
+    createInterface({ input: child.stdout }).on("line", (line) => {
+      let message: any;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (message.id === 0) {
+        send({ method: "initialized", params: {} });
+        send({ id: 1, method: "model/list", params: {} });
+      } else if (message.id === 1) {
+        const data = Array.isArray(message.result?.data) ? message.result.data : [];
+        done(data.filter((one: any) => one && typeof one.model === "string" && !one.hidden).map((one: any) => ({ id: one.model, name: typeof one.displayName === "string" && one.displayName ? one.displayName : one.model })));
+      }
+    });
+  });
+  if (list.length) codexModels = { at: Date.now(), list };
+  return list;
 }

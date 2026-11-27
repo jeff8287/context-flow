@@ -259,7 +259,8 @@ export async function readRollout(sessionId: string, path: string): Promise<Roll
     };
     if (item.type === "UserMessage") {
       const text = typed(parts(item.content));
-      if (text) push("prompt", text);
+      const images = Array.isArray(item.content) ? item.content.filter((part: any) => /image/i.test(String(part?.type ?? ""))).length : 0;
+      if (text) push("prompt", text, images ? { images } : {});
     } else if (item.type === "AgentMessage") {
       const text = parts(item.content).trim();
       if (text) answers.push(push("answer", text, item.phase === "final_answer" ? { final: true } : {}));

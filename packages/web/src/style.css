@@ -515,3 +515,26 @@ body.moving, body.moving * { cursor: grabbing !important; user-select: none; -we
 .toast button:hover { background: var(--press); color: var(--ink); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+/* What goes with a message besides pieces: the files picked, the button that picks them, the model to answer with. */
+.composer .clip { flex: none; width: 28px; height: 30px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); }
+.composer .clip:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.composer .clip:disabled { opacity: .35; cursor: default; }
+.composer .clip svg { width: 17px; height: 17px; }
+.composer .files { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.file { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 26px; padding: 0 8px; border: 1px solid var(--edge-strong); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 12px; }
+.file svg { flex: none; width: 13px; height: 13px; color: var(--muted); }
+.file b { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.file i { flex: none; color: var(--faint); font-style: normal; font-size: 11px; }
+.file button { flex: none; width: 18px; height: 18px; margin-right: -4px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--faint); font-size: 14px; line-height: 1; }
+.file button:hover { background: var(--press); color: var(--ink); }
+.file.pic { height: 40px; padding-left: 3px; }
+.file.pic img { flex: none; width: 34px; height: 34px; border-radius: 5px; object-fit: cover; }
+.files-said { color: var(--muted); font-size: 12px; }
+.sent-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.sent-files img { max-width: 132px; max-height: 96px; border-radius: 8px; border: 1px solid var(--edge); object-fit: cover; background: var(--surface); }
+.composer-foot { display: flex; align-items: center; min-height: 20px; margin-top: -2px; }
+.composer-foot .model { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; color: var(--faint); font-size: 11.5px; }
+.composer-foot select { max-width: 240px; height: 22px; padding: 0 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11.5px; }
+.composer-foot select:hover { border-color: var(--edge-strong); }
+.composer-foot select.set { border-color: var(--ink); color: var(--ink); font-weight: 600; }
+#chat.dropping .composer { outline: 2px dashed var(--ink); outline-offset: 3px; }

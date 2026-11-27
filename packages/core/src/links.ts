@@ -22,12 +22,33 @@ export function withBlocks(text: string, blocks: string[]): string {
   return (text ? text + "\n\n" : "") + NOTE + "\n\n" + blocks.join("\n\n");
 }
 
-/** What the person typed in a message, without the pieces that went along with it: a session is named after that, not after a piece. */
+/** What a message is told of the files sent along with it that are not pictures: where they lie, one a line. It
+ *  stands after what was typed and before the pieces. */
+export const FILES_NOTE = "(함께 보낸 파일입니다. 필요하면 읽어 보세요.)";
+export const filesNote = (paths: string[]) => (paths.length ? "\n\n" + FILES_NOTE + "\n" + paths.map((path) => "- " + path).join("\n") : "");
+
+/** The files a message says were sent along with it. */
+export function filesIn(text: string): string[] {
+  const at = text.indexOf(FILES_NOTE + "\n- ");
+  if (at === -1) return [];
+  const out: string[] = [];
+  for (const row of text.slice(at + FILES_NOTE.length + 1).split("\n")) {
+    if (!row.startsWith("- ")) break;
+    out.push(row.slice(2));
+  }
+  return out;
+}
+
+/** What the person typed in a message, without what went along with it (the pieces, the list of files): a session is named after that, not after a piece. */
 export function withoutPieces(text: string): string {
   const at = text.indexOf(PIECE_MARK);
-  if (at === -1) return text;
-  const before = text.slice(0, at).trimEnd();
-  return before.endsWith(NOTE) ? before.slice(0, -NOTE.length).trimEnd() : before;
+  let typed = text;
+  if (at !== -1) {
+    const before = text.slice(0, at).trimEnd();
+    typed = before.endsWith(NOTE) ? before.slice(0, -NOTE.length).trimEnd() : before;
+  }
+  const files = typed.lastIndexOf(FILES_NOTE);
+  return files !== -1 && /^(\n- [^\n]+)+\s*$/.test(typed.slice(files + FILES_NOTE.length)) ? typed.slice(0, files).trimEnd() : typed;
 }
 
 /** One piece between its marks. */

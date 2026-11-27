@@ -2,11 +2,11 @@
 // Nothing of the person's own is read or written: the tool is pointed at demo/home for everything.
 //   --port N   the port to serve on (8802 unless said; a real install uses 8801)
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { serve } from "../packages/core/src/server.ts";
 import { make, unfit } from "./make.ts";
-import { CLAUDE, HOME, PROJECTS, ROOT, SESSIONS, useDemoHomes } from "./world.ts";
+import { CLAUDE, PROJECTS, ROOT, SESSIONS, useDemoHomes, useStandIns } from "./world.ts";
 
 process.removeAllListeners("warning"); // node:sqlite still announces itself as experimental
 const args = process.argv.slice(2);
@@ -24,15 +24,8 @@ if (why) {
 useDemoHomes();
 const made = await make();
 
-// The two clients are stood in for by demo/agent.ts: the tool starts these the way it starts Codex and Claude Code.
-const bin = join(HOME, "bin");
-mkdirSync(bin, { recursive: true });
-for (const client of ["claude", "codex"]) {
-  const path = join(bin, client);
-  writeFileSync(path, "#!/bin/sh\nexec \"" + process.execPath + "\" --disable-warning=ExperimentalWarning \"" + join(ROOT, "demo", "agent.ts") + "\" " + client + " \"$@\"\n");
-  chmodSync(path, 0o755);
-  process.env["CONTEXT_FLOW_" + client.toUpperCase()] = path;
-}
+// The two clients are stood in for by demo/agent.ts.
+useStandIns();
 
 // Two sessions are in the middle of something: one at work, one stopped until it is allowed to run a command. Claude
 // Code says so in a small file for each of its live processes; here this process and a helper that only waits stand

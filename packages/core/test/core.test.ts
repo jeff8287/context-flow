@@ -11,7 +11,7 @@ import { folderName, readClaudeSessions } from "../src/claude.ts";
 import { freshPlan } from "../src/fresh.ts";
 import { applyRollout, readRollout } from "../src/codex.ts";
 import { hookStates } from "../src/hooks.ts";
-import { farLinks, overlaps, pieceBlock, recordedLinks, transferLinks, withBlocks, withoutPieces, withPieces } from "../src/links.ts";
+import { farLinks, FILES_NOTE, filesIn, filesNote, overlaps, pieceBlock, recordedLinks, transferLinks, withBlocks, withoutPieces, withPieces } from "../src/links.ts";
 import { readClaudeLive, settleActivity, type ClaudeLive, type Live } from "../src/live.ts";
 import type { Item, Place, Project, Session, Snapshot, Transfer } from "../src/model.ts";
 import { flat, forgetPastes, pasteLinks } from "../src/paste.ts";
@@ -20,7 +20,7 @@ import { talkOf } from "../src/read.ts";
 import { LABEL, servicePath, servicePlist } from "../src/service.ts";
 import { buildSnapshot, findProjects, nearestProject, waitingOf } from "../src/snapshot.ts";
 import { standalonePage } from "../src/standalone.ts";
-import { appendTransfers, dropPending, queuePieces, readBasket, readPending, readTransfers, takePending, tidyStore, writeBasket, type Pending } from "../src/store.ts";
+import { appendTransfers, dropPending, queuePieces, readBasket, readPending, readTransfers, saveUploads, takePending, tidyStore, writeBasket, type Pending } from "../src/store.ts";
 import { startNew, type Turn } from "../src/talk.ts";
 import { typed } from "../src/util.ts";
 import { grown, Interest } from "../src/watch.ts";
@@ -862,4 +862,45 @@ test("a record that is kept open and added to is found to have grown by looking 
   } finally {
     closeSync(fd);
   }
+});
+test("the files sent along with a message are kept under names that stay in their folder, and are no more or larger than is taken", () => {
+  const home = join(scratchDir, "uploads-home");
+  mkdirSync(home, { recursive: true });
+  const before = process.env.CONTEXT_FLOW_HOME;
+  process.env.CONTEXT_FLOW_HOME = home;
+  try {
+    const data = (text: string) => Buffer.from(text).toString("base64");
+    assert.deepEqual(saveUploads(undefined), { dir: null, saved: [] });
+    const kept = saveUploads([{ name: "shot.png", type: "image/png", data: data("p") }, { name: "../../etc/passwd", type: "", data: data("x") }, { name: "a.log", type: "text/plain", data: data("one") }, { name: "a.log", type: "text/plain", data: data("two") }, { name: ".hidden$(rm).sh", type: "text/x-sh", data: data("s") }, { name: "pic.svg", type: "image/svg+xml", data: data("<svg/>") }]);
+    assert.deepEqual(kept.saved.map((one) => [one.name, one.image]), [["shot.png", true], ["passwd", false], ["a.log", false], ["a-2.log", false], ["hidden_(rm).sh", false], ["pic.svg", false]]);
+    for (const one of kept.saved) assert.equal(dirname(one.path), kept.dir);
+    assert.ok(kept.dir!.startsWith(join(home, "uploads")));
+    assert.equal(readFileSync(kept.saved[3].path, "utf8"), "two");
+    assert.throws(() => saveUploads(Array.from({ length: 9 }, (_, n) => ({ name: n + ".txt", type: "text/plain", data: data("x") }))), /8개까지/);
+    assert.throws(() => saveUploads([{ name: "big.bin", type: "", data: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64") }]), /10MB/);
+    // what is thirty days old goes when the store is tidied; what is newer stays
+    const old = join(home, "uploads", "long-ago");
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, "x.txt"), "x");
+    tidyStore(Date.now() + 31 * 24 * 3600_000);
+    assert.equal(existsSync(old), false);
+    assert.equal(existsSync(kept.dir!), false);
+  } finally {
+    if (before === undefined) delete process.env.CONTEXT_FLOW_HOME;
+    else process.env.CONTEXT_FLOW_HOME = before;
+  }
+});
+
+test("what was typed in a message is known apart from the list of files that went along with it", () => {
+  const typed = "이 로그를 봐줘";
+  const note = filesNote(["/keep/a b.log", "/keep/c.csv"]);
+  assert.deepEqual(filesIn(typed + note), ["/keep/a b.log", "/keep/c.csv"]);
+  assert.equal(withoutPieces(typed + note), typed);
+  const whole = withBlocks(typed + note, [pieceBlock({ id: "cf1", from: "‘다른 세션’ (Codex)", kind: "답변", text: "조각" })]);
+  assert.equal(withoutPieces(whole), typed);
+  assert.deepEqual(filesIn(whole), ["/keep/a b.log", "/keep/c.csv"]);
+  assert.equal(filesNote([]), "");
+  assert.deepEqual(filesIn(typed), []);
+  // the words alone, when somebody happens to type them, are not a list of files
+  assert.equal(withoutPieces("그 말은 " + FILES_NOTE + " 라는 뜻"), "그 말은 " + FILES_NOTE + " 라는 뜻");
 });

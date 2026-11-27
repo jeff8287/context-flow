@@ -1,5 +1,6 @@
 // The demo's made-up world: where its records are kept and what its sessions are called. Nothing here is anybody's
 // real work. Everything the demo writes goes under demo/home, which can be deleted at any time.
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,6 +42,19 @@ export function useDemoHomes(): void {
   process.env.CONTEXT_FLOW_CODEX_HOME = CODEX;
   process.env.CONTEXT_FLOW_CLAUDE_HOME = CLAUDE;
   process.env.CONTEXT_FLOW_HOME = FLOW;
+}
+
+/** Put the demo's stand-ins (demo/agent.ts) where the tool looks for the two clients: it then starts them the way it
+ *  starts Codex and Claude Code. */
+export function useStandIns(): void {
+  const bin = join(HOME, "bin");
+  mkdirSync(bin, { recursive: true });
+  for (const client of ["claude", "codex"]) {
+    const path = join(bin, client);
+    writeFileSync(path, "#!/bin/sh\nexec \"" + process.execPath + "\" --disable-warning=ExperimentalWarning \"" + join(ROOT, "demo", "agent.ts") + "\" " + client + " \"$@\"\n");
+    chmodSync(path, 0o755);
+    process.env["CONTEXT_FLOW_" + client.toUpperCase()] = path;
+  }
 }
 
 export const line = (value: unknown) => JSON.stringify(value) + "\n";

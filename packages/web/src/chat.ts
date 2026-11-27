@@ -6,9 +6,9 @@
 // next thing said to that session, wherever that is typed (the hook of the session's client takes it).
 // A piece can be carried: dragged onto a session of the map it is attached to what is said to that session next;
 // dragged onto the empty map it begins a session (drag.ts). The pane also shows where a new session is begun.
-import type { FarLink, Item, Link, Session, TraceStep, TurnEvent, Waiting } from "../../core/src/model.ts";
+import type { Client, FarLink, Item, Link, Session, TraceStep, TurnEvent, Waiting } from "../../core/src/model.ts";
 import { freshPlan } from "../../core/src/fresh.ts";
-import { withoutPieces } from "../../core/src/links.ts";
+import { filesIn, withoutPieces } from "../../core/src/links.ts";
 import { carries, onLanding, press, type Spec } from "./drag.ts";
 import { act, afar, call, CLIENT, clock, colorOf, day, el, flowLabel, h, hookTrouble, ICON, keepBasket, KIND, LINK, many, owner, placeOf, post, projectOf, projName, state, stateWord, top, whose, type Held, type Span } from "./state.ts";
 
@@ -23,7 +23,7 @@ let live: { session: string; turn: string; source: EventSource } | null = null;
 /** Why the last turn sent from here did not finish, kept on show until the next one is sent. */
 let trouble = { id: "", text: "" };
 /** What was last sent from here, so that it can be put back in the box if the session did not take it. */
-let sent = { session: "", text: "", pieces: [] as string[], taken: false };
+let sent = { session: "", text: "", pieces: [] as string[], files: [] as { file: File; url: string | null }[], taken: false };
 /** Each item now on the page, by its id: a piece is cut from its text. */
 const texts = new Map<string, Said>();
 /** The stretch of text now selected, if it can be kept as a piece. */
@@ -205,7 +205,7 @@ function rawOffset(container: Node, offset: number, end: boolean): number | null
 // ---------- pieces: picking, keeping, showing ----------
 
 /** What the person typed, apart from the pieces that were sent along with it. */
-const typedPart = withoutPieces;
+const typedPart = withoutPieces; // what was typed: without the pieces and the list of files that went along
 const MARK = /<context-piece id="([^"]+)" from="([^"]*)" kind="([^"]*)">\n([\s\S]*?)\n<\/context-piece>/g;
 /** A piece that went along with a message, folded under it. hooked: it was set to wait and came with a message typed somewhere else. */
 function sentCards(text: string, hooked = false): HTMLElement[] {
@@ -438,7 +438,7 @@ function bubble(item: Said, who: "user" | "agent"): HTMLElement {
   };
   put(item.text);
   made.append(text);
-  if (who === "user") made.append(...sentCards(item.text), ...sentCards(item.added ?? "", true));
+  if (who === "user") made.append(...fileCards(item.text, item.images), ...sentCards(item.text), ...sentCards(item.added ?? "", true));
   // the whole of what was said, kept as one piece
   const grab = h("button", "grab", "담기");
   grab.title = "누르면 이 말 전체를 조각으로 담습니다. 끌어서 지도의 세션에 놓을 수도 있습니다. 일부만 담으려면 글을 끌어서 고르세요";
@@ -560,6 +560,192 @@ function fill(body: HTMLElement, session: Session, items: Said[], all: boolean, 
 // ---------- carrying the talk on ----------
 
 /** Set the box to what can be done now: write; stop the answer under way; or wait for work going on somewhere else. */
+// ---------- what goes with a message besides pieces: pictures, other files, and another model ----------
+
+/** A file picked to go with the next message. url: a picture's, to show it small. */
+interface Picked { file: File; url: string | null }
+let picked: Picked[] = [];
+/** The model chosen for the open session's next message; "" is the session's own. */
+let wantModel = "";
+/** What each client offers to answer with, as the server found out: asked for once a client. */
+const offered = new Map<Client, { id: string; name: string }[]>();
+const PICTURE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const ROOM = 10 * 1024 * 1024;
+const MOST = 8;
+const sizeOf = (bytes: number) => (bytes < 1024 ? bytes + "B" : bytes < 1024 * 1024 ? Math.round(bytes / 1024) + "KB" : (bytes / 1024 / 1024).toFixed(1) + "MB");
+
+function dropPicked() {
+  for (const one of picked) if (one.url) URL.revokeObjectURL(one.url);
+  picked = [];
+}
+
+/** Take files to go with the next message: chosen, pasted, or dropped on the pane. */
+function takeFiles(files: Iterable<File>) {
+  if (!pane().querySelector(".composer") || pane().classList.contains("no-send")) return;
+  let said = "";
+  for (const file of files) {
+    if (picked.length >= MOST) { said = "한 번에 " + MOST + "개까지 붙일 수 있습니다"; break; }
+    if (picked.reduce((sum, one) => sum + one.file.size, 0) + file.size > ROOM) { said = "붙인 것이 모두 합쳐 10MB를 넘습니다"; break; }
+    picked.push({ file, url: PICTURE.has(file.type) ? URL.createObjectURL(file) : null });
+  }
+  drawPicked(said);
+  tune();
+}
+
+/** The files picked, in a row over the box; each can be taken off again. */
+function drawPicked(said = "") {
+  const row = pane().querySelector<HTMLElement>(".composer .files");
+  if (!row) return;
+  row.textContent = "";
+  row.hidden = !picked.length && !said;
+  for (const one of picked) {
+    const name = one.file.name || "붙여넣은 그림";
+    const chip = h("span", "file" + (one.url ? " pic" : ""));
+    if (one.url) {
+      const img = h("img");
+      img.src = one.url;
+      img.alt = "";
+      chip.append(img);
+    } else chip.insertAdjacentHTML("beforeend", ICON.file);
+    chip.append(h("b", "", name), h("i", "", sizeOf(one.file.size)));
+    chip.title = name + " · " + (one.url ? "그림으로 보냅니다" : "파일로 두고, 어디 있는지 에이전트에게 알려 줍니다");
+    const off = h("button", "", "×");
+    off.type = "button";
+    off.title = "떼기";
+    off.onclick = () => {
+      if (one.url) URL.revokeObjectURL(one.url);
+      picked = picked.filter((other) => other !== one);
+      drawPicked();
+      tune();
+    };
+    chip.append(off);
+    row.append(chip);
+  }
+  if (said) row.append(h("span", "files-said", said));
+}
+
+/** The files as they are sent: their bytes in base64. */
+async function wireFiles(list: Picked[]): Promise<{ name: string; type: string; data: string }[]> {
+  const out: { name: string; type: string; data: string }[] = [];
+  for (const one of list) {
+    const bytes = new Uint8Array(await one.file.arrayBuffer());
+    let binary = "";
+    for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+    out.push({ name: one.file.name || "pasted." + (one.file.type.split("/")[1] ?? "png"), type: one.file.type, data: btoa(binary) });
+  }
+  return out;
+}
+
+/** What shows of the pictures in the message just sent. (The other files are named by the message itself.) */
+function sentPictures(list: Picked[]): HTMLElement | null {
+  const pictures = list.filter((one) => one.url);
+  if (!pictures.length) return null;
+  const row = h("div", "sent-files");
+  for (const one of pictures) {
+    const img = h("img");
+    img.src = one.url!;
+    img.alt = one.file.name;
+    row.append(img);
+  }
+  return row;
+}
+
+/** The files a message says were sent along with it, by name; and how many pictures the record says came with it. */
+function fileCards(text: string, images = 0): HTMLElement[] {
+  const out = filesIn(text).map((path) => {
+    const chip = h("span", "file");
+    chip.insertAdjacentHTML("beforeend", ICON.file);
+    chip.append(h("b", "", path.split("/").pop() ?? path));
+    chip.title = path;
+    return chip;
+  });
+  if (images) out.unshift(h("span", "file", "그림 " + images + "개"));
+  if (!out.length) return [];
+  const row = h("div", "sent-files");
+  row.append(...out);
+  return [row];
+}
+
+/** The button that opens the file chooser, the row the chosen files show in, and pasting files into the box. */
+function attachParts(box: HTMLTextAreaElement): { clip: HTMLButtonElement; files: HTMLElement; input: HTMLInputElement } {
+  const input = h("input", "");
+  input.type = "file";
+  input.multiple = true;
+  input.hidden = true;
+  input.onchange = () => { takeFiles(input.files ?? []); input.value = ""; };
+  const clip = h("button", "clip");
+  clip.type = "button";
+  clip.innerHTML = ICON.clip;
+  clip.title = "그림이나 파일 붙이기. 입력칸에 붙여넣거나 대화창에 끌어다 놓아도 됩니다";
+  clip.setAttribute("aria-label", "그림이나 파일 붙이기");
+  clip.onclick = () => input.click();
+  const files = h("div", "files");
+  files.hidden = true;
+  box.addEventListener("paste", (event) => {
+    const pasted = [...(event.clipboardData?.files ?? [])];
+    if (!pasted.length) return; // words are pasted as words
+    event.preventDefault();
+    takeFiles(pasted);
+  });
+  return { clip, files, input };
+}
+
+/** Files of the system dropped on the pane go with the next message. (Pieces are carried another way: drag.ts.) */
+function watchDrops() {
+  const box = pane();
+  const files = (event: DragEvent) => Boolean(event.dataTransfer?.types.includes("Files")) && Boolean(box.querySelector(".composer")) && !box.classList.contains("no-send");
+  box.addEventListener("dragover", (event) => {
+    if (!files(event)) return;
+    event.preventDefault();
+    box.classList.add("dropping");
+  });
+  box.addEventListener("dragleave", (event) => { if (!box.contains(event.relatedTarget as Node | null)) box.classList.remove("dropping"); });
+  box.addEventListener("drop", (event) => {
+    box.classList.remove("dropping");
+    if (!files(event)) return;
+    event.preventDefault();
+    takeFiles(event.dataTransfer?.files ?? []);
+  });
+}
+
+/** The models the open session's next message can be answered with: what its client offers, and what this client's
+ *  sessions on the map were seen to run on. Drawn again only when the choices have changed, so that a list that is
+ *  open is not shut under the hand. */
+function drawModels(session: Session) {
+  const foot = pane().querySelector<HTMLElement>(".composer .composer-foot");
+  const select = foot?.querySelector<HTMLSelectElement>("select");
+  if (!foot || !select) return;
+  if (!offered.has(session.client)) {
+    offered.set(session.client, []);
+    void call<{ models: { id: string; name: string }[] }>("/api/models?client=" + session.client).then(({ models }) => {
+      offered.set(session.client, models);
+      const open = state.open ? state.sessions.get(state.open) : undefined;
+      if (open?.client === session.client) drawModels(open);
+    }).catch(() => {});
+  }
+  const names = new Map<string, string>();
+  for (const one of offered.get(session.client) ?? []) names.set(one.id, one.name);
+  for (const other of [...state.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt)) if (other.client === session.client && other.model && !names.has(other.model)) names.set(other.model, other.model);
+  if (session.model) names.delete(session.model);
+  if (wantModel && !names.has(wantModel)) wantModel = "";
+  const drawn = JSON.stringify([session.model, ...names]);
+  if (select.dataset.drawn !== drawn) {
+    select.dataset.drawn = drawn;
+    select.textContent = "";
+    const own = h("option", "", session.model ?? "기본 모델");
+    own.value = "";
+    select.append(own);
+    for (const [id, name] of names) {
+      const option = h("option", "", name === id ? id : name + " · " + id);
+      option.value = id;
+      select.append(option);
+    }
+  }
+  select.value = wantModel;
+  select.classList.toggle("set", Boolean(wantModel));
+  foot.hidden = !names.size;
+}
+
 function tune() {
   if (state.fresh) return tuneNew();
   const box = pane().querySelector<HTMLTextAreaElement>(".composer textarea");
@@ -573,7 +759,11 @@ function tune() {
   go.innerHTML = busy ? ICON.stop : ICON.send;
   go.title = busy ? "멈추기" : "보내기";
   go.classList.toggle("stop", busy);
-  go.disabled = !busy && (elsewhere || (!box.value.trim() && !state.attached.size));
+  // pieces can go by themselves; pictures and files go with words that say what is wanted of them
+  go.disabled = !busy && (elsewhere || !(box.value.trim() || (state.attached.size && !picked.length)));
+  if (!elsewhere && !busy && picked.length && !box.value.trim()) box.placeholder = "붙인 것과 함께 보낼 말을 적어 주세요";
+  const clip = pane().querySelector<HTMLButtonElement>(".composer .clip");
+  if (clip) clip.disabled = elsewhere || busy;
   const later = pane().querySelector<HTMLButtonElement>(".composer .later");
   if (later) later.hidden = !state.attached.size; // setting pieces to wait starts no turn: it can be done whatever the session is at
 }
@@ -641,7 +831,7 @@ function sentBubble(text: string): HTMLElement {
   const mine = h("div", "msg user");
   const typed = typedPart(text);
   if (typed) mine.append(h("div", "text", typed));
-  mine.append(...sentCards(text));
+  mine.append(...fileCards(text), ...sentCards(text));
   return mine;
 }
 
@@ -679,7 +869,10 @@ function follow(id: string, turn: string) {
       const said = [...body.querySelectorAll<HTMLElement>(":scope > .msg.user[data-item]")].reverse().find((one) => texts.get(one.dataset.item ?? "")?.text === event.text);
       if (said) while (said.nextSibling && said.nextSibling !== box) said.nextSibling.remove();
       said?.remove();
-      put(sentBubble(event.text));
+      const mine = sentBubble(event.text);
+      const shown = sent.session === id ? sentPictures(sent.files) : null; // the pictures just sent from here, while the record does not show them
+      if (shown) mine.prepend(shown);
+      put(mine);
     } else if (event.t === "break") {
       settle();
       words = null;
@@ -763,7 +956,8 @@ async function submit(id: string) {
   }
   const text = box.value.trim();
   const along = state.basket.filter((piece) => state.attached.has(piece.id));
-  if (!text && !along.length) return;
+  const going = picked;
+  if (!text && (going.length || !along.length)) return;
   box.value = "";
   box.style.height = "auto";
   trouble = { id: "", text: "" };
@@ -772,8 +966,11 @@ async function submit(id: string) {
   // What was typed shows at once; the server reads the records before it starts the turn, which takes a moment.
   const sending = h("div", "turn-live");
   const mine = h("div", "msg user");
+  const shown = sentPictures(going);
+  if (shown) mine.append(shown);
   if (text) mine.append(h("div", "text", text));
-  if (along.length) mine.append(h("div", "sent-note", "조각 " + along.length + "개와 함께"));
+  const others = going.filter((one) => !one.url).length;
+  if (along.length || others) mine.append(h("div", "sent-note", [along.length ? "조각 " + along.length + "개" : "", others ? "파일 " + others + "개" : ""].filter(Boolean).join(", ") + "와 함께"));
   const wait = h("div", "live");
   wait.append(h("i", "pulse"), "보내는 중");
   sending.append(mine, wait);
@@ -782,8 +979,12 @@ async function submit(id: string) {
   box.disabled = true;
   try {
     const pieces = along.map(wire);
-    const { turn } = await post<{ turn: string }>("/api/send", { project: state.snap!.project.id, session: id, text, pieces });
-    sent = { session: id, text, pieces: along.map((piece) => piece.id), taken: false };
+    const files = await wireFiles(going);
+    const { turn } = await post<{ turn: string }>("/api/send", { project: state.snap!.project.id, session: id, text, pieces, ...(files.length ? { files } : {}), ...(wantModel ? { model: wantModel } : {}) });
+    sent = { session: id, text, pieces: along.map((piece) => piece.id), files: going, taken: false };
+    picked = []; // they went: the pictures stay in sight in the message, so their addresses are kept
+    wantModel = ""; // the session answers with that model from now on: it is its own
+    drawPicked();
     for (const piece of along) state.on.add(owner(piece.sessionId)?.id ?? piece.sessionId); // so that the line of what was sent is on the map
     state.attached.clear();
     drawBasket();
@@ -814,8 +1015,20 @@ function composer(form: HTMLFormElement, id: string) {
   later.onclick = () => void setToWait(id);
   const go = h("button", "go");
   go.type = "submit";
-  row.append(box, later, go);
-  form.append(waitbar, basket, row);
+  const { clip, files, input } = attachParts(box);
+  const foot = h("div", "composer-foot");
+  const label = h("label", "model");
+  const select = h("select", "");
+  select.title = "다음 말에 답할 모델. 바꾸면 이 세션은 그 뒤로도 그 모델로 답합니다";
+  select.onchange = () => {
+    wantModel = select.value;
+    select.classList.toggle("set", Boolean(wantModel));
+  };
+  label.append(h("span", "", "모델"), select);
+  foot.append(label);
+  foot.hidden = true;
+  row.append(clip, box, later, go);
+  form.append(waitbar, basket, files, row, foot, input);
   box.oninput = () => {
     box.style.height = "auto";
     box.style.height = Math.min(140, box.scrollHeight) + "px";
@@ -1153,6 +1366,8 @@ function tuneNew() {
   go.title = "새 세션 시작";
   go.disabled = starting || !box.value.trim();
   box.disabled = starting;
+  const clip = pane().querySelector<HTMLButtonElement>(".composer .clip");
+  if (clip) clip.disabled = starting;
   const plan = freshWay();
   const where = pane().querySelector<HTMLElement>(".fresh-where");
   if (where && plan) {
@@ -1206,11 +1421,15 @@ async function startNew() {
   const text = box.value.trim();
   if (!text) return;
   const along = state.basket.filter((piece) => state.attached.has(piece.id));
+  const going = picked;
   body.querySelectorAll(".turn-error, .turn-live").forEach((node) => node.remove());
   const sending = h("div", "turn-live");
   const mine = h("div", "msg user");
+  const shown = sentPictures(going);
+  if (shown) mine.append(shown);
   mine.append(h("div", "text", text));
-  if (along.length) mine.append(h("div", "sent-note", "조각 " + along.length + "개와 함께"));
+  const others = going.filter((one) => !one.url).length;
+  if (along.length || others) mine.append(h("div", "sent-note", [along.length ? "조각 " + along.length + "개" : "", others ? "파일 " + others + "개" : ""].filter(Boolean).join(", ") + "와 함께"));
   const wait = h("div", "live");
   wait.append(h("i", "pulse"), "새 세션을 시작하는 중");
   sending.append(mine, wait);
@@ -1221,8 +1440,11 @@ async function startNew() {
     const pieces = along.map(wire);
     // the folder and the session to run like are sent as shown, so that what begins is what was seen
     const plan = freshWay();
-    const made = await post<{ turn: string; session: string }>("/api/new", { project: state.snap!.project.id, client: fresh.client, text, pieces, cwd: plan?.cwd, like: plan ? plan.like?.id ?? "none" : undefined });
+    const files = await wireFiles(going);
+    const made = await post<{ turn: string; session: string }>("/api/new", { project: state.snap!.project.id, client: fresh.client, text, pieces, cwd: plan?.cwd, like: plan ? plan.like?.id ?? "none" : undefined, ...(files.length ? { files } : {}) });
     box.value = "";
+    picked = [];
+    sent = { session: made.session, text, pieces: [], files: going, taken: false };
     state.attached.clear();
     for (const piece of along) state.on.add(home(piece.sessionId)); // so that the line to the new session is on the map
     drawBasket();
@@ -1310,8 +1532,9 @@ export function drawNew() {
   input.placeholder = "새 세션에 처음 할 말";
   const go = h("button", "go");
   go.type = "submit";
-  row.append(input, go);
-  form.append(basket, row);
+  const attach = attachParts(input);
+  row.append(attach.clip, input, go);
+  form.append(basket, attach.files, row, attach.input);
   input.oninput = () => {
     input.style.height = "auto";
     input.style.height = Math.min(140, input.scrollHeight) + "px";
@@ -1379,6 +1602,7 @@ export async function drawChat(id: string, focus?: string, quiet = false, span?:
   if (!session) return closeChat();
   if (!wired) {
     watchSelection();
+    watchDrops();
     wired = true;
   }
   const box = pane();
@@ -1390,6 +1614,8 @@ export async function drawChat(id: string, focus?: string, quiet = false, span?:
     leave();
     have = { id: "", count: -1 };
     box.textContent = "";
+    dropPicked(); // what was picked was for the talk that was open
+    wantModel = "";
     const form = h("form", "composer");
     composer(form, id);
     box.append(h("header", "chat-head"), h("div", "tabs"), h("div", "ties"), h("div", "talk"), h("div", "ctx"), form);
@@ -1413,6 +1639,7 @@ export async function drawChat(id: string, focus?: string, quiet = false, span?:
   drawTabs(session);
   drawBasket();
   drawWaitbar(session);
+  drawModels(session);
   tune();
   if (state.tab === "context") drawContext(session);
   if (same && live?.session === id) return; // the turn under way is being shown as it happens; the record is read when it ends
