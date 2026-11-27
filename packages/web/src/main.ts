@@ -5,6 +5,7 @@ import type { Piece, Project, Session, Snapshot, TraceStep } from "../../core/sr
 import { closeChat, drawChat, drawEdge, drawNew, drawTrace } from "./chat.ts";
 import { drawLanes } from "./lanes.ts";
 import { drawMap, fitMap, focusMap, spotsOf, stepZoom, tidyMap } from "./map.ts";
+import { noticeLine, noticesOf, type Notice } from "./notice.ts";
 import { act, ago, buildGraph, call, CLIENT, colorOf, el, h, ICON, labelBasket, loadBasket, many, net, owner, projectOf, projectsOn, projName, state, syncBasket, tops, type Span } from "./state.ts";
 import "./style.css";
 
@@ -180,6 +181,7 @@ function drawIo() {
   frozen.hidden = !state.bundle;
   if (state.bundle) frozen.textContent = "내보낸 기록 · " + stamp(state.bundle.madeAt) + " · 읽기 전용";
   el<HTMLElement>("refresh").hidden = Boolean(state.bundle);
+  el<HTMLElement>("notify").hidden = Boolean(state.bundle); // nothing in an exported record comes to an end
   el<HTMLElement>("app").classList.toggle("frozen", Boolean(state.bundle));
 }
 
@@ -438,6 +440,8 @@ async function load(id: string, how: "fresh" | "again" | "widen" = "fresh", adde
   if (how === "fresh") await loadBasket(snap.project.id);
   else await syncBasket();
   if (turn !== asked || (again && id !== project)) return; // another project was chosen meanwhile
+  // what the same sessions were doing at the last reading, set beside what they are doing now
+  const news = again && state.snap && !state.bundle && state.snap.project.id === snap.project.id ? noticesOf(state.snap, snap) : [];
   project = id;
   state.snap = snap;
   state.sessions = new Map(snap.sessions.map((session) => [session.id, session]));
@@ -465,6 +469,153 @@ async function load(id: string, how: "fresh" | "again" | "widen" = "fresh", adde
   if (state.trace?.shown) drawTrace();
   else if (state.edge) drawEdge();
   else if (state.open) void drawChat(state.open, undefined, true);
+  announce(news);
+  listen();
+}
+// ---------- kept up to date, and telling the person ----------
+
+// The server says when the records change (it watches them), and the screen then reads them again at once, whether
+// or not it is in view: a screen nobody looks at is the one that has something to tell. With an older server, or
+// where the records cannot be watched, nothing is said and the screen asks at its own pace (the timer at the end).
+let source: EventSource | null = null;
+let sourceFor = "";
+let readAt = 0; // when the records were last read because the server said they had changed
+let owed = 0; // the timer of a reading that is owed
+let hands = false; // a pointer is held down: something is being dragged, and is not drawn again under the hand
+
+function soon() {
+  const wait = readAt + (document.visibilityState === "visible" ? 1500 : 4000) - Date.now();
+  if (wait <= 0 && !hands) {
+    window.clearTimeout(owed);
+    owed = 0;
+    readAt = Date.now();
+    void load(project, "again").catch(() => {});
+  } else if (!owed) owed = window.setTimeout(() => { owed = 0; soon(); }, Math.max(wait, 300));
+}
+
+function listen() {
+  if (state.bundle || state.alone || typeof EventSource === "undefined") {
+    source?.close();
+    source = null;
+    state.live = false;
+    return;
+  }
+  if (source && sourceFor === project && source.readyState !== EventSource.CLOSED) return;
+  source?.close();
+  sourceFor = project;
+  const made = new EventSource("/api/events?project=" + encodeURIComponent(project));
+  source = made;
+  made.onmessage = (message) => {
+    if (source !== made) return;
+    let event: { t?: string; watching?: boolean };
+    try {
+      event = JSON.parse(message.data);
+    } catch {
+      return;
+    }
+    if (event.t === "hello") state.live = Boolean(event.watching);
+    else if (event.t === "changed") soon();
+  };
+  // The server went away (the browser asks for it again by itself), or it knows nothing of this (asked again at the next reading).
+  made.onerror = () => { if (source === made) state.live = false; };
+}
+
+/** How the person is told that a session stopped or waits for them. page: a card on the map. system: a notice of
+ *  the system's as well, while this window is not the one being looked at. */
+const tells = { page: true, system: false };
+let unseen = 0;
+let plainTitle = "";
+const away = () => document.visibilityState !== "visible" || !document.hasFocus();
+const allowed = () => typeof Notification !== "undefined" && Notification.permission === "granted";
+
+/** A card over the map, newest on top. It goes by itself after a while of being seen; pressed, it does what it is for. */
+function card(title: string, line: string, more: { tone?: string; color?: string; open?: () => void } = {}) {
+  const box = el<HTMLElement>("toasts");
+  const made = h("div", "toast" + (more.tone ? " " + more.tone : ""));
+  if (more.color) made.style.setProperty("--c", more.color);
+  const close = h("button", "", "×");
+  close.title = "닫기";
+  close.onclick = (event) => { event.stopPropagation(); made.remove(); };
+  made.append(h("b", "", title), h("span", "", line), close);
+  const open = more.open;
+  if (open) {
+    made.classList.add("go");
+    made.title = "누르면 이 세션의 대화를 엽니다";
+    made.onclick = () => { made.remove(); open(); };
+  }
+  box.prepend(made);
+  while (box.children.length > 4) box.lastElementChild?.remove();
+  if (away()) made.dataset.kept = "1"; // nobody is looking: it waits to be seen before its time begins
+  else window.setTimeout(() => made.remove(), 12_000);
+}
+
+function announce(list: Notice[]) {
+  if (!tells.page && !tells.system) return;
+  const gone = away();
+  for (const notice of list) {
+    if (!gone && state.open === notice.sessionId) continue; // the person is looking at that very talk
+    const open = () => act.openChat(notice.sessionId);
+    if (tells.page) card(notice.title, noticeLine(notice), { tone: notice.kind, color: state.colors.get(notice.sessionId), open });
+    if (!gone) continue;
+    unseen += 1;
+    if (!tells.system || !allowed()) continue;
+    try {
+      const made = new Notification(notice.title, { body: noticeLine(notice), tag: "context-flow:" + notice.sessionId });
+      made.onclick = () => { window.focus(); made.close(); open(); };
+    } catch { /* this browser shows none: the card and the title say it */ }
+  }
+  if (!unseen) return;
+  if (!plainTitle) plainTitle = document.title;
+  document.title = "(" + unseen + ") " + plainTitle;
+}
+
+/** The person is looking again: the count in the title has done its work, and the cards kept for them begin their time. */
+function seen() {
+  if (away()) return;
+  if (unseen) {
+    unseen = 0;
+    document.title = plainTitle;
+    plainTitle = "";
+  }
+  document.querySelectorAll<HTMLElement>("#toasts .toast[data-kept]").forEach((made) => {
+    delete made.dataset.kept;
+    window.setTimeout(() => made.remove(), 12_000);
+  });
+}
+
+function drawBell() {
+  const bell = el<HTMLElement>("notify");
+  const system = tells.system && allowed();
+  bell.innerHTML = !tells.page && !tells.system ? ICON.bellOff : system ? ICON.bellOn : ICON.bell;
+  bell.setAttribute("aria-label", "알림: " + (!tells.page && !tells.system ? "끔" : system ? "시스템 알림까지" : "화면 안에서"));
+  el<HTMLInputElement>("notify-page").checked = tells.page;
+  el<HTMLInputElement>("notify-system").checked = tells.system;
+  const blocked = typeof Notification === "undefined" ? "이 브라우저에는 시스템 알림이 없습니다." : Notification.permission === "denied" ? "브라우저가 이 주소의 알림을 막고 있습니다. 주소창의 사이트 설정에서 허용해 주세요." : "";
+  const why = el<HTMLElement>("notify-why");
+  why.textContent = tells.system && blocked ? blocked : "작업 중이던 세션이 끝나거나, 허용이나 답을 기다리기 시작하면 알립니다.";
+  why.classList.toggle("warn", Boolean(tells.system && blocked));
+}
+
+function wireBell() {
+  tells.page = localStorage.getItem("cf-notify-page") !== "0";
+  tells.system = localStorage.getItem("cf-notify-system") === "1";
+  el<HTMLInputElement>("notify-page").onchange = (event) => {
+    tells.page = (event.target as HTMLInputElement).checked;
+    localStorage.setItem("cf-notify-page", tells.page ? "1" : "0");
+    drawBell();
+  };
+  el<HTMLInputElement>("notify-system").onchange = async (event) => {
+    tells.system = (event.target as HTMLInputElement).checked;
+    localStorage.setItem("cf-notify-system", tells.system ? "1" : "0");
+    // the browser asks the person once; this is the press of a button it wants to see before it does
+    if (tells.system && typeof Notification !== "undefined" && Notification.permission === "default") await Notification.requestPermission().catch(() => {});
+    drawBell();
+  };
+  document.addEventListener("visibilitychange", seen);
+  window.addEventListener("focus", seen);
+  window.addEventListener("pointerdown", () => { hands = true; }, true);
+  for (const end of ["pointerup", "pointercancel"]) window.addEventListener(end, () => { hands = false; }, true);
+  drawBell();
 }
 
 function theme(next?: "light" | "dark") {
@@ -533,9 +684,13 @@ function theme(next?: "light" | "dark") {
 
   // exporting, and opening what was exported
   const menu = el<HTMLElement>("io-menu");
-  el<HTMLElement>("io").onclick = (event) => { event.stopPropagation(); picker.hidden = true; menu.hidden = !menu.hidden; };
+  const bells = el<HTMLElement>("notify-menu");
+  el<HTMLElement>("io").onclick = (event) => { event.stopPropagation(); picker.hidden = true; bells.hidden = true; menu.hidden = !menu.hidden; };
+  el<HTMLElement>("notify").onclick = (event) => { event.stopPropagation(); picker.hidden = true; menu.hidden = true; bells.hidden = !bells.hidden; };
+  bells.onclick = (event) => event.stopPropagation();
+  wireBell();
   menu.onclick = (event) => event.stopPropagation();
-  document.addEventListener("click", () => { menu.hidden = true; picker.hidden = true; });
+  document.addEventListener("click", () => { menu.hidden = true; picker.hidden = true; bells.hidden = true; });
   // whether the name of this machine's user is covered in what is exported, and which words besides: kept for the next time
   const mask = el<HTMLInputElement>("mask");
   const words = el<HTMLInputElement>("mask-words");
@@ -624,18 +779,20 @@ function theme(next?: "light" | "dark") {
   window.addEventListener("resize", () => { clearTimeout(timer); timer = window.setTimeout(render, 120); });
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (!menu.hidden || !picker.hidden) { menu.hidden = true; picker.hidden = true; }
+    if (!menu.hidden || !picker.hidden || !bells.hidden) { menu.hidden = true; picker.hidden = true; bells.hidden = true; }
     else if (state.open || state.edge || state.trace || state.fresh) closeChat();
   });
-  // What is at work changes while the page is open: read the records again every half minute while it is in view;
-  // every twelve seconds while some session is at work, so that one that stops to be allowed something is seen soon;
-  // every six seconds while a piece waits, so that its line is drawn soon after its session is spoken to elsewhere.
+  // What is at work changes while the page is open. The server says when the records change (listen, above); what no
+  // record says (a client that died, a turn gone quiet) is found by reading them again every half minute while the
+  // page is in view. When the server says nothing, the page asks oftener: every twelve seconds while some session
+  // is at work, so that one that stops to be allowed something is seen soon; every six seconds while a piece waits,
+  // so that its line is drawn soon after its session is spoken to elsewhere.
   let beat = 0;
   window.setInterval(() => {
     beat += 1;
     if (state.bundle) return; // an exported record does not change
     const busy = state.snap?.sessions.some((session) => session.activity === "running");
     // (and at every beat while the server does not answer, so that the screen is itself again soon after the server is)
-    if (net.down || (document.visibilityState === "visible" && (beat % 5 === 0 || state.snap?.waiting?.length || (busy && beat % 2 === 0)))) void load(project, "again").catch(() => {});
+    if (net.down || (document.visibilityState === "visible" && (beat % 5 === 0 || (!state.live && (state.snap?.waiting?.length || (busy && beat % 2 === 0)))))) void load(project, "again").catch(() => {});
   }, 6_000);
 })().catch((error) => { document.body.append("기록을 읽지 못했습니다: " + error.message); });

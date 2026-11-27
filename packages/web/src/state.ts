@@ -72,6 +72,8 @@ export const state = {
   fresh: null as { client: Client; cwd?: string; like?: string } | null,
   /** Until when a tile under the pointer keeps its card to itself: a piece has just been let go there. */
   calm: 0,
+  /** The server tells this screen when the records change: it need not ask as often to find out. */
+  live: false,
 };
 
 /** What one part asks of the others. main.ts fills these in. */
@@ -219,6 +221,9 @@ export const afar = (piece: { sessionId: string }) => !state.sessions.has(piece.
 export const whose = (piece: { sessionId: string; where?: Place }) => state.sessions.get(piece.sessionId)?.title ?? (piece.where?.title || "다른 프로젝트의 세션");
 
 export const ICON = {
+  bell: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 14v-4.5a4.5 4.5 0 0 1 9 0V14"/><path d="M3.8 14h12.4"/><path d="M8.4 16.6a1.7 1.7 0 0 0 3.2 0"/></svg>',
+  bellOn: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 14v-4.5a4.5 4.5 0 0 1 6.2-4.2"/><path d="M14.5 10.6V14"/><path d="M3.8 14h12.4"/><path d="M8.4 16.6a1.7 1.7 0 0 0 3.2 0"/><circle cx="14.6" cy="5.6" r="2.3" fill="currentColor" stroke="none"/></svg>',
+  bellOff: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 14v-4.5a4.5 4.5 0 0 1 .5-2"/><path d="M8.3 5.5a4.5 4.5 0 0 1 6.2 4v2"/><path d="M3.8 14h10.4"/><path d="M8.4 16.6a1.7 1.7 0 0 0 3.2 0"/><path d="M3.5 3.5l13 13"/></svg>',
   side: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="3.5" width="15" height="13" rx="3"/><path d="M7.5 3.5v13"/></svg>',
   fit: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5v-4h4M16.5 7.5v-4h-4M3.5 12.5v4h4M16.5 12.5v4h-4"/></svg>',
   refresh: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M16 10a6 6 0 1 1-1.8-4.3"/><path d="M16.2 3.6v3.2H13"/></svg>',

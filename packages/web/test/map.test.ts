@@ -1,7 +1,8 @@
 // Where the tiles stand and how a line is led round them: tried with made-up sessions, without a page.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Session } from "../../core/src/model.ts";
+import type { ItemHead, Session } from "../../core/src/model.ts";
+import { noticeLine, noticesOf } from "../src/notice.ts";
 import { GG, GX, H, W, ZP, ZX, ZY, layout, placeZones, planZones, zoneOrder, type Frame, type Spot, type Zone } from "../src/place.ts";
 import { behind, drawn, field, restsOn, rounded, route, sampled, type Rect } from "../src/route.ts";
 import type { Flow, Share } from "../src/state.ts";
@@ -167,4 +168,36 @@ test("whatever is on the map, no line is left behind a tile when there is a way 
     assert.ok(way.points.every((p, at) => !at || Math.abs(p[0] - way.points[at - 1][0]) < 0.01 || Math.abs(p[1] - way.points[at - 1][1]) < 0.01));
   }
   assert.ok(found >= pairs.length - 2, "ways found: " + found + " of " + pairs.length);
+});
+test("the person is told when a session stops working and when one comes to wait for them, once, and not of what is nobody's concern", () => {
+  const head = (sessionId: string, n: number, label: string): ItemHead => ({ id: sessionId + ":" + n, sessionId, turnId: null, kind: "answer", at: n, size: label.length, label });
+  const before = { madeAt: 5000, sessions: [
+    session("worked", "p", { activity: "running" }),
+    session("asks", "p", { activity: "running" }),
+    session("still", "p", { activity: "running" }),
+    session("asked", "p", { activity: "running", needs: "approval" }),
+    session("quick", "p", { activity: "waiting", counts: { prompts: 1, answers: 1, changes: 0 } }),
+    session("same", "p", { activity: "waiting" }),
+    session("helper", "p", { activity: "running", origin: "subagent", parentId: "worked" }),
+    session("shelved", "p", { activity: "running" }),
+  ] };
+  const after = { sessions: [
+    session("worked", "p", { activity: "waiting" }),
+    session("asks", "p", { activity: "running", needs: "approval", nowFile: "/work/app/run.sh" }),
+    session("still", "p", { activity: "running", counts: { prompts: 1, answers: 4, changes: 0 } }),
+    session("asked", "p", { activity: "running", needs: "approval" }),
+    session("quick", "p", { activity: "waiting", counts: { prompts: 2, answers: 2, changes: 0 } }),
+    session("same", "p", { activity: "idle" }),
+    session("helper", "p", { activity: "waiting", origin: "subagent", parentId: "worked" }),
+    session("shelved", "p", { activity: "archived" }),
+    session("born", "p", { activity: "waiting", startedAt: 6000 }),
+    session("old", "p", { activity: "waiting", startedAt: 100 }),
+  ], items: [head("worked", 1, "먼저 한 말"), head("worked", 2, "다 고쳤습니다"), head("quick", 3, "네")] };
+  const told = noticesOf(before, after);
+  assert.deepEqual(told.map((one) => [one.sessionId, one.kind]), [["worked", "done"], ["asks", "approval"], ["quick", "done"], ["born", "done"]]);
+  assert.equal(noticeLine(told[0]), "끝났습니다 · 다 고쳤습니다");
+  assert.equal(noticeLine(told[1]), "허용을 기다립니다 · run.sh");
+  assert.equal(noticeLine(told[3]), "끝났습니다");
+  // read once more with nothing changed: nothing more to tell
+  assert.deepEqual(noticesOf({ madeAt: 7000, sessions: after.sessions }, after), []);
 });
