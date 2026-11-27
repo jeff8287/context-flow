@@ -222,6 +222,7 @@ export const whose = (piece: { sessionId: string; where?: Place }) => state.sess
 
 export const ICON = {
   clip: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.6 9.2 9.4 14.4a2.9 2.9 0 0 1-4.1-4.1l5.9-5.9a1.9 1.9 0 0 1 2.7 2.7l-5.8 5.8a.9.9 0 0 1-1.3-1.3l5-5"/></svg>',
+  install: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3.5" width="14" height="10" rx="2"/><path d="M6.5 16.5h7"/><path d="M10 5.8v4.6M8 8.6l2 2 2-2"/></svg>',
   bell: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 14v-4.5a4.5 4.5 0 0 1 9 0V14"/><path d="M3.8 14h12.4"/><path d="M8.4 16.6a1.7 1.7 0 0 0 3.2 0"/></svg>',
   bellOn: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 14v-4.5a4.5 4.5 0 0 1 6.2-4.2"/><path d="M14.5 10.6V14"/><path d="M3.8 14h12.4"/><path d="M8.4 16.6a1.7 1.7 0 0 0 3.2 0"/><circle cx="14.6" cy="5.6" r="2.3" fill="currentColor" stroke="none"/></svg>',
   bellOff: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 14v-4.5a4.5 4.5 0 0 1 .5-2"/><path d="M8.3 5.5a4.5 4.5 0 0 1 6.2 4v2"/><path d="M3.8 14h10.4"/><path d="M8.4 16.6a1.7 1.7 0 0 0 3.2 0"/><path d="M3.5 3.5l13 13"/></svg>',

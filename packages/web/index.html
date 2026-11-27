@@ -4,17 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>맥락 흐름</title>
+<meta name="theme-color" content="#FAFAFB">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head>
 <body>
 <div id="app">
   <aside id="side" aria-label="세션 목록">
     <header class="side-head">
       <b class="brand">맥락 흐름</b>
+      <button id="install" class="icon" title="앱으로 설치: Dock에 두고 주소창 없는 제 창으로 엽니다" aria-label="앱으로 설치" aria-haspopup="true" hidden></button>
       <button id="notify" class="icon" title="알림" aria-label="알림" aria-haspopup="true"></button>
       <button id="io" class="icon" title="내보내기와 불러오기" aria-label="내보내기와 불러오기"></button>
       <button id="refresh" class="icon" title="기록 다시 읽기" aria-label="기록 다시 읽기"></button>
       <button id="theme" class="icon" title="밝게 또는 어둡게" aria-label="밝게 또는 어둡게"></button>
     </header>
+    <div id="install-menu" hidden>
+      <b>Dock의 앱으로 쓰기</b>
+      <p id="install-how"></p>
+    </div>
     <div id="notify-menu" hidden>
       <label><input id="notify-page" type="checkbox"><span>화면 안에서 알리기</span></label>
       <label title="이 창을 보고 있지 않을 때 운영체제의 알림으로도 띄웁니다. 처음 켤 때 브라우저가 허용할지 묻습니다"><input id="notify-system" type="checkbox"><span>안 보고 있을 때 시스템 알림도</span></label>

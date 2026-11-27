@@ -11,6 +11,7 @@ import { answerBefore, folderName, readClaudeSessions } from "../src/claude.ts";
 import { freshPlan } from "../src/fresh.ts";
 import { applyRollout, forkPoint, readRollout } from "../src/codex.ts";
 import { hookStates } from "../src/hooks.ts";
+import { serve } from "../src/server.ts";
 import { farLinks, FILES_NOTE, filesIn, filesNote, overlaps, pieceBlock, recordedLinks, transferLinks, withBlocks, withoutPieces, withPieces } from "../src/links.ts";
 import { readClaudeLive, settleActivity, type ClaudeLive, type Live } from "../src/live.ts";
 import type { Item, Place, Project, Session, Snapshot, Transfer } from "../src/model.ts";
@@ -391,7 +392,7 @@ test("an exported page holds the screen and the bundle, and asks for nothing out
   const bundle = makeBundle(snapshot, bodies, { sessions: ["a", "b"] });
   const web = join(scratchDir, "web-dist");
   mkdirSync(join(web, "assets"), { recursive: true });
-  writeFileSync(join(web, "index.html"), '<!doctype html>\n<html><head>\n<title>맥락 흐름</title>\n  <script type="module" crossorigin src="/assets/index-abc.js"></script>\n  <link rel="stylesheet" crossorigin href="/assets/index-abc.css">\n</head><body><div id="app"></div></body></html>');
+  writeFileSync(join(web, "index.html"), '<!doctype html>\n<html><head>\n<title>맥락 흐름</title>\n<link rel="manifest" href="/manifest.webmanifest">\n<link rel="icon" href="/icon.svg" type="image/svg+xml">\n<link rel="apple-touch-icon" href="/apple-touch-icon.png">\n  <script type="module" crossorigin src="/assets/index-abc.js"></script>\n  <link rel="stylesheet" crossorigin href="/assets/index-abc.css">\n</head><body><div id="app"></div></body></html>');
   writeFileSync(join(web, "assets", "index-abc.js"), 'console.log("a</script>b", "$1 $& $$");');
   writeFileSync(join(web, "assets", "index-abc.css"), "body{color:red}");
   const page = standalonePage(web, bundle);
@@ -969,4 +970,37 @@ test("a Codex thread is forked after the turn before the request to be said agai
   // a fork whose record does not say where its history ends is not guessed at
   writeFileSync(join(dir, "old.jsonl"), line({ type: "session_meta", payload: { id: "old", forked_from_id: "base" } }));
   assert.equal(forkPoint(session("old", { origin: "fork", parentId: "base", recordPath: join(dir, "old.jsonl") }), [theirs], theirs, pathOf), undefined);
+});
+
+test("what makes the screen an app is served as what it is, and the page shown while the server is down needs nothing from it", async () => {
+  // The files lie beside the screen's own and are served with it. Here they are served from where they are kept.
+  const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "public");
+  const served = serve(0, dir);
+  const at = "http://127.0.0.1:" + (await served.ready);
+  try {
+    const got = await fetch(at + "/manifest.webmanifest");
+    assert.match(got.headers.get("content-type") ?? "", /^application\/manifest\+json/);
+    const manifest = (await got.json()) as { name: string; display: string; start_url: string; icons: { src: string; sizes: string; type: string; purpose: string }[] };
+    assert.deepEqual([manifest.name, manifest.display, manifest.start_url], ["맥락 흐름", "standalone", "/"]);
+    // a browser makes an app of the page only with icons of these sizes, each of which is there and is what it says
+    assert.ok(["192x192", "512x512"].every((size) => manifest.icons.some((icon) => icon.sizes === size && icon.type === "image/png" && icon.purpose === "any")));
+    for (const icon of manifest.icons) {
+      const file = await fetch(at + icon.src);
+      assert.equal(file.status, 200, icon.src);
+      assert.equal(file.headers.get("content-type"), icon.type, icon.src);
+      if (icon.type !== "image/png") continue;
+      const bytes = Buffer.from(await file.arrayBuffer());
+      assert.equal(bytes.subarray(1, 4).toString("latin1"), "PNG", icon.src);
+      assert.equal(bytes.readUInt32BE(16) + "x" + bytes.readUInt32BE(20), icon.sizes, icon.src); // as wide and as high as it says
+    }
+    assert.match((await fetch(at + "/sw.js")).headers.get("content-type") ?? "", /^text\/javascript/);
+    // The page the worker keeps is all there is while the server is down: it brings what it shows, and asks the
+    // server only whether it is back.
+    const page = readFileSync(join(dir, "offline.html"), "utf8");
+    assert.ok(!/\s(?:src|href)=/.test(page));
+    assert.deepEqual([...page.matchAll(/fetch\("([^"]+)"/g)].map((found) => found[1]), ["/api/projects"]);
+    assert.ok(readFileSync(join(dir, "sw.js"), "utf8").includes('"/offline.html"'));
+  } finally {
+    await served.close();
+  }
 });

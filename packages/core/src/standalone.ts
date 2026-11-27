@@ -11,6 +11,8 @@ export function standalonePage(webDir: string, bundle: Bundle): string {
   } catch {
     throw new Error("화면이 아직 빌드되지 않았습니다. npm run build 를 먼저 돌려 주세요");
   }
+  // what makes the served screen an app (its icons, what it says of itself) lies beside it on the server: a file has no such neighbours
+  page = page.replace(/\s*<link rel="(?:manifest|icon|apple-touch-icon)"[^>]*>/g, "");
   const asset = (found: string) => readFileSync(join(webDir, found.replace(/^\//, "")), "utf8");
   // inside a page, a script ends at the first "</script" whatever it stands in, and "<!--" starts a stretch in which it does not end
   const script = page.match(/<script type="module"[^>]*\ssrc="([^"]+)"[^>]*><\/script>/);
