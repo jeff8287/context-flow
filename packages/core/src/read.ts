@@ -1,6 +1,6 @@
 // What the screen asks about a set of items. The server answers from the clients' records and a bundle answers from
 // itself, both through these, so that a bundle reads exactly as the live tool does. Nothing of Node in here.
-import type { Item } from "./model.ts";
+import type { Gone, Item } from "./model.ts";
 
 /** One session's items in the order they were said, for the talk pane. A very long text is cut; the item itself has the whole. */
 export function talkOf(items: Iterable<Item>, sessionId: string, cap = 6000): (Item & { more?: number })[] {
@@ -10,6 +10,19 @@ export function talkOf(items: Iterable<Item>, sessionId: string, cap = 6000): (I
     out.push(item.text.length > cap ? { ...item, text: item.text.slice(0, cap), more: item.text.length - cap } : item);
   }
   return out;
+}
+
+/** What was said in a session and then taken back, for the talk pane: each stretch with the request of the talk it
+ *  is shown before, which is the first one made after the stretch began. The oldest stretch first. */
+export function goneOf(items: Iterable<Item>, sessionId: string, stretches: Item[][] = [], cap = 6000): (Gone & { items: (Item & { more?: number })[] })[] {
+  const said = stretches.filter((stretch) => stretch.length).sort((a, b) => a[0].at - b[0].at);
+  if (!said.length) return [];
+  const prompts: Item[] = [];
+  for (const item of items) if (item.sessionId === sessionId && item.kind === "prompt") prompts.push(item);
+  return said.map((stretch) => ({
+    before: prompts.find((item) => item.at > stretch[0].at)?.id ?? null,
+    items: stretch.map((item) => (item.text.length > cap ? { ...item, text: item.text.slice(0, cap), more: item.text.length - cap } : item)),
+  }));
 }
 
 export interface Hit { id: string; sessionId: string; kind: string; at: number; before: string; match: string; after: string }

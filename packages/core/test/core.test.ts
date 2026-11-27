@@ -18,7 +18,7 @@ import type { Item, Place, Project, Session, Snapshot, Transfer } from "../src/m
 import { flat, forgetPastes, pasteLinks } from "../src/paste.ts";
 import { forgetPictures, picturesOf } from "../src/pictures.ts";
 import { tracePiece } from "../src/trace.ts";
-import { talkOf } from "../src/read.ts";
+import { goneOf, talkOf } from "../src/read.ts";
 import { LABEL, servicePath, servicePlist } from "../src/service.ts";
 import { buildSnapshot, findProjects, nearestProject, waitingOf } from "../src/snapshot.ts";
 import { standalonePage } from "../src/standalone.ts";
@@ -975,6 +975,9 @@ test("a Claude Code talk that was taken back is read the way it came, not the wa
   let talk = await read();
   // the turns that were taken back are not the talk; the items keep the numbers their records give them
   assert.equal(said(talk), "0 하나: 사과 / 1 사과 / 6 넷: 귤 / 7 사과, 귤");
+  // what was taken back is kept beside the talk, and is shown before the request made in its stead
+  assert.deepEqual(talk.gone?.map((stretch) => stretch.map((item) => item.id.slice(5) + " " + item.text).join(" / ")), ["2 둘: 배 / 3 배 / 4 셋: 감 / 5 감"]);
+  assert.deepEqual(goneOf(talk.items, "back", talk.gone).map((one) => [one.before, one.items.length]), [["back:6", 4]]);
   assert.deepEqual([talk.session.counts.prompts, talk.session.counts.answers, talk.session.title], [2, 2, "하나: 사과"]);
   // to say the fourth request again, the talk is taken up at the first answer: not at the answer written just before it
   assert.deepEqual(await stoodBefore(path, "u4"), { at: "a1" });
@@ -998,6 +1001,8 @@ test("a Claude Code talk that was taken back is read the way it came, not the wa
     + user("u6", "x6", "여섯: 잣") + agent("a6", "u6", "잣") + ended("e6", "a6") + user("u7", "c2", "일곱: 깨") + agent("a7", "u7", "깨"));
   talk = await read();
   assert.equal(said(talk), "0 하나: 사과 / 1 사과 / 6 넷: 귤 / 7 사과, 귤 / 8 다섯: 밤 / 9 밤 / 12 일곱: 깨 / 13 깨");
+  assert.deepEqual(talk.gone?.map((stretch) => stretch.map((item) => item.text).join(" / ")), ["둘: 배 / 배 / 셋: 감 / 감", "여섯: 잣 / 잣"]);
+  assert.deepEqual(goneOf(talk.items, "back", talk.gone).map((one) => one.before), ["back:6", "back:12"]);
   assert.deepEqual(await stoodBefore(path, "u7"), { at: "a5" }); // the stretch the summary left comes before it
   assert.deepEqual(await stoodBefore(path, "u5"), { at: "c2" }); // and the summary before that stretch
   assert.deepEqual(await stoodBefore(path, "u6"), { not: "back" });
@@ -1008,6 +1013,7 @@ test("a Claude Code talk that was taken back is read the way it came, not the wa
   writeFileSync(join(dir, "start.jsonl"), user("v1", null, "쌀") + agent("b1", "v1", "쌀") + user("v2", "b1", "밀") + agent("b2", "v2", "밀") + user("v3", null, "귀리") + agent("b3", "v3", "귀리"));
   talk = await read();
   assert.equal(talk.items.map((item) => item.id + " " + item.text).join(" / "), "start:4 귀리 / start:5 귀리");
+  assert.deepEqual(talk.gone?.map((stretch) => stretch.map((item) => item.text).join(" ")), ["쌀 쌀 밀 밀"]);
   assert.deepEqual(await stoodBefore(join(dir, "start.jsonl"), "v3"), { at: null });
 
   // An answer has been seen written before the request it names (one record of one real talk): the way the talk
@@ -1036,7 +1042,7 @@ test("a Codex thread is forked after the turn before the request to be said agai
   writeFileSync(join(dir, "base.jsonl"), kept + turnLine("t3", "task_started") + turnLine("t3", "task_complete"));
   writeFileSync(join(dir, "fork.jsonl"), line({ type: "session_meta", payload: { id: "fork", forked_from_id: "base", history_base: { thread_id: "base", end_byte_offset: Buffer.byteLength(kept) } } }) + turnLine("f1", "task_started"));
   // (here a file is simply named after its thread)
-  const files: RecordFiles = { fileOf: (own) => (["base", "fork", "again"].includes(own) ? { thread: own, path: join(dir, own + ".jsonl") } : null), seqOf: () => 0 };
+  const files: RecordFiles = { fileOf: (own) => (["base", "fork", "again"].includes(own) ? { thread: own, path: join(dir, own + ".jsonl") } : null), seqOf: () => 0, filesOf: () => [] };
   const fork = session("fork", { origin: "fork", parentId: "base", recordPath: join(dir, "fork.jsonl") });
   const first = item("f1", "prompt", 0, "fork");
   assert.deepEqual(forkPoint(fork, [first, item("f1", "answer", 1, "fork")], first, files), { from: "base", at: "t2" });
@@ -1209,6 +1215,10 @@ test("a Codex thread whose request was said again in the app is read back throug
   const read = (await readRollout(T, two, files))!;
   assert.deepEqual(read.items.map((item) => [item.id.slice(T.length + 1), item.kind, item.text]), [["0", "prompt", "첫 요청"], ["1", "answer", "첫 답"], ["1000000", "prompt", "고친 요청"], ["1000001", "answer", "고친 답"]]);
   assert.deepEqual([read.forkedFrom, read.base, read.files], [null, null, [{ path: one, end: Buffer.byteLength(first) }, { path: two }]]);
+  // what was said after that place in the first file is of the talk no more: it is kept beside it, under the numbers it had
+  assert.deepEqual(read.gone.map((stretch) => stretch.map((item) => item.id.slice(T.length + 1) + " " + item.text)), [["2 고치기 전의 요청", "3 버려질 답"]]);
+  // and is shown before the request that was made in its stead
+  assert.deepEqual(goneOf(read.items, T, read.gone).map((one) => [one.before?.slice(T.length + 1), one.items.length]), [["1000000", 2]]);
   // what the first file alone gives is what it always gave: the numbers of the thread's first file are not changed
   assert.deepEqual((await readRollout(T, one, files))!.items.map((item) => item.id.slice(T.length + 1) + " " + item.text), ["0 첫 요청", "1 첫 답", "2 고치기 전의 요청", "3 버려질 답"]);
   // the thread began when its first word was said, not when its newest file was begun
@@ -1221,6 +1231,9 @@ test("a Codex thread whose request was said again in the app is read back throug
   const later = (await readRollout(T, third, files))!;
   assert.deepEqual(later.items.map((item) => item.id.slice(T.length + 1) + " " + item.text), ["0 첫 요청", "1 첫 답", "2000000 또 고친 요청", "2000001 또 고친 답"]);
   assert.equal(later.files.length, 3);
+  // each time the request was said again left a stretch behind: the first file's, and the second's own
+  assert.deepEqual(later.gone.map((stretch) => stretch.map((item) => item.id.slice(T.length + 1) + " " + item.text)), [["2 고치기 전의 요청", "3 버려질 답"], ["1000000 고친 요청", "1000001 고친 답"]]);
+  assert.deepEqual(goneOf(later.items, T, later.gone).map((one) => one.before?.slice(T.length + 1)), ["2000000", "2000000"]);
   // A fork made of the thread while its first file was all there was keeps naming that file, whatever the thread
   // has been through since: the last turn it keeps is found there.
   const whole = readFileSync(one, "utf8");
@@ -1249,6 +1262,16 @@ test("a Codex thread whose request was said again in the app is read back throug
   writeFileSync(lost, meta(T, { history_base: { thread_id: "01234567-0000-4000-8000-00000000dead", end_ordinal_exclusive: 3, end_byte_offset: 10 } }) + turn("t9", 9, "홀로 남은 요청", "답"));
   const alone = (await readRollout(T, lost, recordFiles(home)))!;
   assert.deepEqual([alone.base, alone.items.map((item) => item.id.slice(T.length + 1))], [null, ["3000000", "3000001"]]); // its numbers are still its own
+  // where its history lies is not known, so the thread's older files are not taken for something left behind
+  assert.deepEqual(alone.gone, []);
+  // A thread whose first request was said again begins anew, in a file that names no other: all that was said in
+  // the thread's older files is left behind, a file a stretch. A newer file than the one read is not looked at.
+  const anew = join(day, "rollout-2026-01-01T03-45-00-" + T + "_0abcdef0-0000-4000-8000-000000000008.jsonl");
+  writeFileSync(anew, meta(T) + turn("t8", 8, "처음부터 다시 한 요청", "답"));
+  const begun = (await readRollout(T, anew, recordFiles(home)))!;
+  assert.deepEqual(begun.items.map((item) => item.id.slice(T.length + 1)), ["3000000", "3000001"]);
+  assert.deepEqual(begun.gone.map((stretch) => stretch.map((item) => item.id.slice(T.length + 1)).join(" ")), ["0 1 2 3", "1000000 1000001", "2000000 2000001"]);
+  assert.deepEqual(goneOf(begun.items, T, begun.gone).map((one) => one.before?.slice(T.length + 1)), ["3000000", "3000000", "3000000"]);
 });
 
 test("what a fork was given when it was made is not pasted into it; what its parent said after that place can be", () => {

@@ -15,6 +15,9 @@ export interface Built {
   snapshot: Snapshot;
   /** The text of every item, by id: handed out one at a time, never with the snapshot. */
   bodies: Map<string, Item>;
+  /** For a session: what was said in it and then taken back, a stretch at a time. It is in no snapshot and ties
+   *  nothing; a session's talk is given with it, to be looked at. */
+  gone: Map<string, Item[][]>;
 }
 
 /** What a prompt asks, for its label: the desktop app puts the files and the selection it attaches before the request itself. */
@@ -74,11 +77,12 @@ export function nearestProject(cwd: string, projects: Project[]): Project | unde
 }
 
 /** One project's sessions with what they said and changed, as the records and the live processes have them. */
-async function readProject(project: Project, assigned: Map<string, string>, now: number, live: Live): Promise<{ sessions: Session[]; items: Item[]; notes: string[]; forks: Map<string, Fork> }> {
+async function readProject(project: Project, assigned: Map<string, string>, now: number, live: Live): Promise<{ sessions: Session[]; items: Item[]; notes: string[]; forks: Map<string, Fork>; gone: Map<string, Item[][]> }> {
   const notes: string[] = [];
   const sessions: Session[] = [];
   const items: Item[] = [];
   const forks = new Map<string, Fork>();
+  const gone = new Map<string, Item[][]>();
   const codex = readCodexThreads(project, assigned);
   notes.push(...codex.notes);
   let unread = 0;
@@ -94,6 +98,7 @@ async function readProject(project: Project, assigned: Map<string, string>, now:
     else session.nowFile = null;
     sessions.push(session);
     items.push(...rollout.items);
+    if (rollout.gone.length) gone.set(session.id, rollout.gone);
     if (rollout.base) forks.set(session.id, { base: rollout.base });
   }
   if (unread) notes.push("기록 파일을 읽지 못한 Codex 스레드 " + unread + "개는 뺐습니다.");
@@ -104,6 +109,7 @@ async function readProject(project: Project, assigned: Map<string, string>, now:
     transcript.session.nowFile = transcript.session.activity === "running" ? transcript.items.findLast((item) => item.kind === "change")?.path ?? null : null;
     sessions.push({ ...transcript.session }); // its own copy: the reader keeps the one it made, and what is settled here is this snapshot's
     items.push(...transcript.items);
+    if (transcript.gone) gone.set(transcript.session.id, transcript.gone);
     if (transcript.forkKept) forks.set(transcript.session.id, { request: transcript.forkKept });
   }
   // A copy Codex made of a Claude Code session, never talked to since, is the same conversation twice: keep the original.
@@ -113,8 +119,9 @@ async function readProject(project: Project, assigned: Map<string, string>, now:
     notes.push("Codex가 Claude Code에서 가져온 사본 " + copies.size + "개는 그 뒤 이어 쓴 것이 없어 원본 세션 하나로 그렸습니다.");
     for (let at = sessions.length - 1; at >= 0; at -= 1) if (copies.has(sessions[at].id)) sessions.splice(at, 1);
     for (let at = items.length - 1; at >= 0; at -= 1) if (copies.has(items[at].sessionId)) items.splice(at, 1);
+    for (const id of copies) gone.delete(id);
   }
-  return { sessions, items, notes, forks };
+  return { sessions, items, notes, forks, gone };
 }
 
 /** What a fork's own record says of where it was made. base (Codex): the thread its history lies in and how far
@@ -132,9 +139,11 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
   const items: Item[] = [];
   const holders = new Map<string, Project[]>();
   const forks = new Map<string, Fork>();
+  const gone = new Map<string, Item[][]>();
   for (const one of projects) {
     const part = await readProject(one, assigned, now, live);
     for (const [id, fork] of part.forks) forks.set(id, fork);
+    for (const [id, stretches] of part.gone) gone.set(id, stretches);
     notes.push(...part.notes.map((note) => (many ? one.name + ": " + note : note)));
     const fresh = new Set<string>();
     for (const session of part.sessions) {
@@ -176,6 +185,7 @@ export async function buildSnapshot(project: Project | Project[], assigned: Map<
   return {
     snapshot: { version: 1, madeAt: now, project: whole, ...(many ? { projects } : {}), sessions, items: items.map(head), links: [...recorded.links, ...sent, ...pasted], waiting: waitingOf(pending, sessions, items), far: farLinks(transfers, sessions, items), hooks: hookStates(), overlaps: overlaps(items, whole), notes },
     bodies,
+    gone,
   };
 }
 

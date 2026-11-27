@@ -12,7 +12,7 @@ import type { Item, Place, Transfer } from "../packages/core/src/model.ts";
 import { forgetPastes } from "../packages/core/src/paste.ts";
 import { buildSnapshot, readCodexProjects } from "../packages/core/src/snapshot.ts";
 import { scratch } from "../packages/core/src/util.ts";
-import { CLAUDE, CODEX, FLOW, HOME, MODEL, PROJECTS, SESSIONS, THREADS, iso, line, rolloutPath, transcriptPath, useDemoHomes } from "./world.ts";
+import { CLAUDE, CODEX, FLOW, HOME, MODEL, PROJECTS, SESSIONS, THREADS, iso, laterFile, line, rolloutPath, transcriptPath, useDemoHomes } from "./world.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -34,17 +34,21 @@ const TESTED = "재현 테스트 `test_double_booking`을 추가했습니다.\n\
 // ---------- writers for the two clients' formats ----------
 
 interface Step { say?: string; change?: { path: string; diff: string }; last?: boolean }
+interface Turn { at: number; prompt: string; steps: Step[] }
 
-/** A Codex thread: its row in the list of threads and its rollout file. */
-function codexThread(db: DatabaseSync, thread: { id: string; cwd: string; title: string; at: number; archived?: boolean; forkedFrom?: string }, turns: { at: number; prompt: string; steps: Step[] }[]): void {
-  let text = line({ timestamp: iso(thread.at), type: "session_meta", payload: { id: thread.id, cwd: thread.cwd, ...(thread.forkedFrom ? { forked_from_id: thread.forkedFrom } : {}) } })
+/** A Codex thread: its row in the list of threads and its rollout file.
+ *  again: a request of it was said again in the app, in other words. As Codex does it, the record is then begun in a
+ *  new file, whose first line says how far into the file before it the talk still holds (keep: so many turns); what
+ *  was said after that place stays in the old file and is of the talk no more. */
+function codexThread(db: DatabaseSync, thread: { id: string; cwd: string; title: string; at: number; archived?: boolean; forkedFrom?: string }, turns: Turn[], again?: { own: string; keep: number; turns: Turn[] }): void {
+  const head = (more: object = {}) => line({ timestamp: iso(thread.at), type: "session_meta", payload: { id: thread.id, cwd: thread.cwd, ...(thread.forkedFrom ? { forked_from_id: thread.forkedFrom } : {}), ...more } })
     + line({ timestamp: iso(thread.at), type: "turn_context", payload: { cwd: thread.cwd, model: MODEL.codex, approval_policy: "on-request", sandbox_policy: { type: "workspace-write" } } });
   let last = thread.at;
-  turns.forEach((turn, n) => {
-    const turnId = "turn-" + (n + 1);
+  const said = (list: Turn[], name: (n: number) => string) => list.map((turn, n) => {
+    const turnId = name(n);
     let at = turn.at;
     const item = (body: unknown) => line({ timestamp: iso(at), type: "event_msg", payload: { type: "item_completed", turn_id: turnId, completed_at_ms: at, item: body } });
-    text += line({ timestamp: iso(at), type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
+    let text = line({ timestamp: iso(at), type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
     text += item({ type: "UserMessage", content: [{ type: "text", text: turn.prompt }] });
     for (const step of turn.steps) {
       at += 40_000;
@@ -52,26 +56,40 @@ function codexThread(db: DatabaseSync, thread: { id: string; cwd: string; title:
       if (step.change) text += item({ type: "FileChange", status: "completed", changes: { [step.change.path]: { type: "update", unified_diff: step.change.diff } } });
     }
     at += 5_000;
-    text += line({ timestamp: iso(at), type: "event_msg", payload: { type: "task_complete", turn_id: turnId } });
     last = at;
+    return text + line({ timestamp: iso(at), type: "event_msg", payload: { type: "task_complete", turn_id: turnId } });
   });
-  const path = rolloutPath(thread.id);
+  const first = said(turns, (n) => "turn-" + (n + 1));
+  let path = rolloutPath(thread.id);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, text);
+  writeFileSync(path, head() + first.join(""));
+  if (again) {
+    const kept = head() + first.slice(0, again.keep).join("");
+    path = rolloutPath(thread.id, again.own);
+    writeFileSync(path, head({ history_mode: "paginated", history_base: { thread_id: thread.id, end_ordinal_exclusive: kept.split("\n").length - 1, end_byte_offset: Buffer.byteLength(kept) } })
+      + said(again.turns, (n) => "turn-" + (again.keep + n + 1) + "-again").join(""));
+  }
   db.prepare("insert into threads (id, rollout_path, cwd, title, name, model, created_at_ms, updated_at_ms, thread_source, source, archived, first_user_message, attached_thread_parent_id) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(thread.id, path, thread.cwd, thread.title, thread.title, MODEL.codex, thread.at, last, null, "cli", thread.archived ? 1 : 0, turns[0]?.prompt ?? "", null);
 }
 
-interface Said { at: number; user?: string; text?: string; edit?: { path: string; lines: string[] }; bash?: string; task?: string; end?: boolean }
+/** after: the request was made with the talk taken back to there (to after the row with that number; -1: to before
+ *  anything was said). What was said in between stays in the record, as Claude Code leaves it. */
+interface Said { at: number; user?: string; text?: string; edit?: { path: string; lines: string[] }; bash?: string; task?: string; end?: boolean; after?: number }
 
-/** A Claude Code session: its transcript. A turn that does not end (end left out on its last line) is one still under way. */
+/** A Claude Code session: its transcript. A turn that does not end (end left out on its last line) is one still under way.
+ *  Each record names the one it was written after, as Claude Code's do: that is how a talk that was taken back is known. */
 function claudeSession(session: { id: string; cwd: string; title: string }, said: Said[], sub?: { name: string; said: Said[] }): void {
   const lines = (id: string, rows: Said[], side: boolean) => {
     let text = side ? "" : line({ type: "summary", summary: session.title, leafUuid: id + "-0" });
+    let before: string | null = null; // the record written last
+    const ends: (string | null)[] = []; // the last record of each row
     rows.forEach((row, n) => {
-      const more = { cwd: session.cwd, sessionId: session.id, timestamp: iso(row.at), uuid: id + "-" + n, ...(side ? { isSidechain: true } : {}) };
+      const more = { cwd: session.cwd, sessionId: session.id, timestamp: iso(row.at), uuid: id + "-" + n, parentUuid: row.after === undefined ? before : row.after < 0 ? null : ends[row.after] ?? null, ...(side ? { isSidechain: true } : {}) };
+      before = more.uuid;
       if (row.user !== undefined) {
         text += line({ type: "user", ...more, message: { role: "user", content: row.user } });
+        ends.push(before);
         return;
       }
       const use = row.edit ? { type: "tool_use", id: "tool-" + n, name: "Edit", input: { file_path: row.edit.path } }
@@ -81,9 +99,11 @@ function claudeSession(session: { id: string; cwd: string; title: string }, said
       if (row.edit) {
         const added = row.edit.lines.filter((one) => one.startsWith("+")).length;
         const removed = row.edit.lines.filter((one) => one.startsWith("-")).length;
-        text += line({ type: "user", ...more, uuid: id + "-" + n + "r", timestamp: iso(row.at + 2000), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-" + n, content: "ok" }] },
+        text += line({ type: "user", ...more, uuid: id + "-" + n + "r", parentUuid: before, timestamp: iso(row.at + 2000), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-" + n, content: "ok" }] },
           toolUseResult: { filePath: row.edit.path, structuredPatch: [{ oldStart: 1, oldLines: removed + 1, newStart: 1, newLines: added + 1, lines: row.edit.lines }] } });
+        before = id + "-" + n + "r";
       }
+      ends.push(before);
     });
     return text;
   };
@@ -184,11 +204,27 @@ export async function make(now = Date.now()): Promise<{ sessions: number; links:
     { at: now - 7 * HOUR, user: "예약 폼을 키보드만으로 끝까지 쓸 수 있는지 점검하고 고쳐줘." },
     { at: now - 7 * HOUR + 3 * MINUTE, edit: { path: form, lines: ["-<div onClick={submit}>예약</div>", "+<button type=\"submit\">예약</button>"] } },
     { at: now - 7 * HOUR + 5 * MINUTE, text: "제출 단추가 `div`라 키보드로 누를 수 없었습니다. `button`으로 바꿨고, 탭 순서는 문제없습니다.", end: true },
+    // The person asked for something more, did not like where it went, and took the talk back (/rewind) to ask
+    // for something else: what was said in between stays in the record, and is the talk no more.
+    { at: now - 7 * HOUR + 9 * MINUTE, user: "탭 순서를 날짜, 시간, 좌석 순으로 직접 정해줘." },
+    { at: now - 7 * HOUR + 11 * MINUTE, text: "세 입력에 `tabindex`를 1, 2, 3으로 주면 순서는 고정됩니다. 다만 양수 `tabindex`는 페이지의 다른 요소보다 항상 먼저 잡혀서, 머리말의 링크를 건너뛰게 됩니다. 그래도 진행할까요?", end: true },
+    { at: now - 7 * HOUR + 14 * MINUTE, after: 2, user: "키보드로 옮겨 다닐 때 어디에 있는지 안 보여. 포커스 테두리가 보이게 해줘." },
+    { at: now - 7 * HOUR + 16 * MINUTE, edit: { path: join(web.root, "src", "form.css"), lines: ["-button:focus { outline: none; }", "+button:focus-visible, input:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }"] } },
+    { at: now - 7 * HOUR + 18 * MINUTE, text: "`outline: none`이 포커스 테두리를 지우고 있었습니다. `:focus-visible`일 때 2px 테두리가 보이게 바꿨습니다. 마우스로 누를 때는 나타나지 않습니다.", end: true },
   ]);
+  // Its second request was said again in the app, in other words: Codex began the record in a new file, and the
+  // request as it was first made, with what came of it, stays behind in the old one.
+  const seatMap = join(web.root, "src", "SeatMap.tsx");
   codexThread(db, { id: S.map.id, cwd: web.root, title: S.map.title, at: now - 3 * DAY }, [{
     at: now - 3 * DAY, prompt: "좌석 배치도를 SVG로 그리는 컴포넌트를 만들어줘. 예약된 좌석은 회색으로.",
-    steps: [{ change: { path: join(web.root, "src", "SeatMap.tsx"), diff: "@@ -0,0 +1,3 @@\n+export function SeatMap({ seats }: Props) {\n+  return <svg>{seats.map((seat) => <Seat key={seat.id} {...seat} />)}</svg>;\n+}" } }, { say: "`SeatMap` 컴포넌트를 만들었습니다. 예약된 좌석은 회색이고 누를 수 없습니다.", last: true }],
-  }]);
+    steps: [{ change: { path: seatMap, diff: "@@ -0,0 +1,3 @@\n+export function SeatMap({ seats }: Props) {\n+  return <svg>{seats.map((seat) => <Seat key={seat.id} {...seat} />)}</svg>;\n+}" } }, { say: "`SeatMap` 컴포넌트를 만들었습니다. 예약된 좌석은 회색이고 누를 수 없습니다.", last: true }],
+  }, {
+    at: now - 3 * DAY + 20 * MINUTE, prompt: "좌석을 누르면 바로 예약되게 해줘.",
+    steps: [{ change: { path: seatMap, diff: "@@ -1,3 +1,3 @@\n export function SeatMap({ seats }: Props) {\n-  return <svg>{seats.map((seat) => <Seat key={seat.id} {...seat} />)}</svg>;\n+  return <svg>{seats.map((seat) => <Seat key={seat.id} {...seat} onClick={() => reserve(seat.id)} />)}</svg>;\n }" } }, { say: "좌석을 누르면 곧바로 `reserve()`를 부르게 했습니다. 확인 단계가 없어서, 잘못 누른 좌석도 그대로 예약됩니다.", last: true }],
+  }], { own: laterFile(1), keep: 1, turns: [{
+    at: now - 3 * DAY + 26 * MINUTE, prompt: "좌석을 누르면 예약 폼에 그 좌석이 골라지게만 해줘. 예약은 폼의 단추로 하게.",
+    steps: [{ change: { path: seatMap, diff: "@@ -1,3 +1,3 @@\n-export function SeatMap({ seats }: Props) {\n-  return <svg>{seats.map((seat) => <Seat key={seat.id} {...seat} />)}</svg>;\n+export function SeatMap({ seats, onPick }: Props) {\n+  return <svg>{seats.map((seat) => <Seat key={seat.id} {...seat} onClick={() => onPick(seat.id)} />)}</svg>;\n }" } }, { say: "좌석을 누르면 `onPick`으로 그 좌석을 알리기만 하게 했습니다. 예약은 폼의 '예약' 단추를 눌러야 됩니다.", last: true }],
+  }] });
   db.close();
 
   // The pieces that were sent with this tool. Each is cut from where it was said (found by reading the records made
@@ -231,6 +267,12 @@ export async function make(now = Date.now()): Promise<{ sessions: number; links:
   const wanted = { fork: 1, paste: 1, transfer: 2, subagent: 1 };
   for (const [kind, count] of Object.entries(wanted)) if (links[kind] !== count) throw new Error("the demo's records should give " + count + " " + kind + " link(s), and give " + (links[kind] ?? 0) + ": " + JSON.stringify(links));
   if (whole.snapshot.overlaps.length !== 2) throw new Error("the demo's records should give two files that two sessions changed, and give " + whole.snapshot.overlaps.length);
+  // two talks went one way and then another: each is the two requests it stands on, with one left behind beside it
+  for (const name of ["map", "form"]) {
+    const asked = whole.snapshot.sessions.find((one) => one.id === S[name].id)?.counts.prompts;
+    const behind = (whole.gone.get(S[name].id) ?? []).map((stretch) => stretch.filter((item) => item.kind === "prompt").length).join(",");
+    if (asked !== 2 || behind !== "1") throw new Error("the demo's ‘" + S[name].title + "’ should be a talk of two requests with one request left behind, and is one of " + asked + " with " + (behind || "none"));
+  }
   return { sessions: whole.snapshot.sessions.length, links };
 }
 

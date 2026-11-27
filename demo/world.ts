@@ -60,7 +60,9 @@ export function useStandIns(): void {
 export const line = (value: unknown) => JSON.stringify(value) + "\n";
 export const iso = (at: number) => new Date(at).toISOString();
 /** The file Codex keeps for a thread, and the one Claude Code keeps for a session that works in a folder. */
-export const rolloutPath = (thread: string) => join(CODEX, "sessions", "rollout-" + thread + ".jsonl");
+export const rolloutPath = (thread: string, own?: string) => join(CODEX, "sessions", "rollout-" + thread + (own ? "_" + own : "") + ".jsonl");
+/** The id of its own that a later file of a thread's record has (a thread begins a new file when a request of it is said again in the app). */
+export const laterFile = (n: number) => "0de0f11e-0000-4000-8000-" + String(n).padStart(12, "0");
 export const transcriptPath = (cwd: string, session: string) => join(CLAUDE, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), session + ".jsonl");
 
 export const THREADS = "create table if not exists threads (id text primary key, rollout_path text, cwd text, title text, name text, model text, created_at_ms integer, updated_at_ms integer, thread_source text, source text, archived integer, first_user_message text, attached_thread_parent_id text);"
