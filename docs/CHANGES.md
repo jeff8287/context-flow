@@ -25,6 +25,7 @@ npm run service -- restart   # 서비스로 띄워 두었을 때. 아니면 npm 
 | 화면을 Dock의 앱으로 설치합니다. 서버가 꺼져 있으면 그렇다고 알려 주고, 다시 뜨면 저절로 돌아옵니다 | 왼쪽 위 설치 단추 | [USAGE.md](USAGE.md) 5절 'Dock의 앱으로 쓰기' | [#13](https://github.com/jeff8287/context-flow/pull/13) |
 | Codex 데스크톱 앱 없이 씁니다. Claude Code만 쓰거나 Codex를 CLI로만 써도, 세션이 일한 폴더(git 작업 폴더)가 프로젝트로 잡힙니다 | 왼쪽 위 프로젝트 고르기 | [USAGE.md](USAGE.md) 1절 '프로젝트와 세션이 정해지는 법' | [#30](https://github.com/jeff8287/context-flow/pull/30) |
 | 읽을 세션이 하나도 없으면 빈 화면 대신 기록을 어디서 찾아봤는지와 할 일을 보여 주고, 첫 세션이 생기면 저절로 이어집니다. 새 세션 창은 이 컴퓨터에 없는 클라이언트를 '찾지 못함'으로 보입니다 | 지도 자리, 새 세션 창 | [USAGE.md](USAGE.md) 1절, 8절 | [#40](https://github.com/jeff8287/context-flow/pull/40) |
+| 세션이 하나도 없을 때 화면에서 폴더를 골라 첫 세션을 시작합니다. 홈 폴더부터 폴더를 따라 내려가거나 경로를 적고, 홈 근처의 git 저장소는 바로 고릅니다 | 안내 카드의 '폴더를 골라 첫 세션 시작', 새 세션 | [USAGE.md](USAGE.md) 1절 | [#44](https://github.com/jeff8287/context-flow/pull/44) |
 | 요청을 고치거나 대화를 되감기 전에 오간 말을, 대화가 갈린 자리에서 펼쳐 봅니다. 거기서도 조각을 담아 다른 세션이나 그 세션 자신에게 보냅니다 | 대화의 점선 줄 '고치기 전의 대화', '되감기 전의 대화' | [DEMO.md](DEMO.md) 10절 | [#26](https://github.com/jeff8287/context-flow/pull/26), [#32](https://github.com/jeff8287/context-flow/pull/32) |
 
 ## 기록을 읽는 법이 바뀐 것
@@ -50,7 +51,7 @@ npm run service -- restart   # 서비스로 띄워 두었을 때. 아니면 npm 
 
 ## 개발
 
-- PR마다 타입 검사, 시험, 빌드가 돕니다([#7](https://github.com/jeff8287/context-flow/pull/7)). 시험은 58개이고 모두 지어낸 기록으로 돕니다.
+- PR마다 타입 검사, 시험, 빌드가 돕니다([#7](https://github.com/jeff8287/context-flow/pull/7)). 시험은 59개이고 모두 지어낸 기록으로 돕니다.
 - 데모의 그림을 `npm run demo:shots`로 다시 찍습니다. DEMO.md의 단계를 헤드리스 Chrome으로 차례대로 눌러 가며 찍으므로, 그림이 지금 화면과 같고 따라 하기의 단계가 실제로 되는지도 함께 확인됩니다. 이 명령으로 단계 그림을 모두 지금 화면으로 다시 찍었습니다. 데모의 Codex 대역이 화면의 서버가 스레드 목록을 읽는 순간과 겹치면 승인 뒤에 끝나 버리던 것도 고쳤습니다([#36](https://github.com/jeff8287/context-flow/pull/36)).
 - Linux 컨테이너처럼 root로 도는 곳에서 `demo:shots`가 Chromium을 띄우지 못하던 것을 고쳤습니다. Chrome이 뜨지 않으면 Chrome이 남긴 말을 함께 알려 주고 뒷정리를 합니다([#39](https://github.com/jeff8287/context-flow/pull/39)).
 - 실제 클라이언트로 확인한 것과 하지 못한 것은 [WHY.md의 6절](WHY.md#6-한계와-확인하지-못한-것)에 날짜와 함께 적어 두었습니다.

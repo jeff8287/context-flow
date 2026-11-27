@@ -2,11 +2,12 @@
 // on a map with what ties them; a session's talk opened from the map.
 import { readBundle, type Bundle } from "../../core/src/bundle.ts";
 import type { Client, ItemKind, Piece, Project, Session, Snapshot, TraceStep } from "../../core/src/model.ts";
-import { closeChat, drawChat, drawEdge, drawNew, drawTrace } from "./chat.ts";
+import { closeChat, drawChat, drawEdge, drawNew, drawTrace, seen as sessionSeen } from "./chat.ts";
 import { drawLanes } from "./lanes.ts";
 import { drawMap, fitMap, focusMap, spotsOf, stepZoom, tidyMap } from "./map.ts";
 import { noticeLine, noticesOf, type Notice } from "./notice.ts";
 import { act, ago, buildGraph, call, CLIENT, colorOf, el, h, ICON, labelBasket, loadBasket, many, net, owner, projectOf, projectsOn, projName, state, syncBasket, tops, type Span } from "./state.ts";
+import { under } from "../../core/src/util.ts";
 import "./style.css";
 
 const GROUPS: [string, Session["activity"]][] = [["작업 중", "running"], ["답 기다림", "waiting"], ["이전", "idle"], ["보관됨", "archived"]];
@@ -204,6 +205,7 @@ function exportAs(kind: "html" | "json") {
 }
 
 function render() {
+  if (!state.snap) return; // nothing read yet (no session anywhere): there is no list or map to draw, and the pane draws itself
   drawSide();
   drawIo();
   drawLegend();
@@ -290,6 +292,19 @@ const address = () => {
 /** Whether the projects on offer are the Codex app's sidebar projects, or were found from the folders the sessions worked in. */
 let foundFrom: "sidebar" | "folders" = "sidebar";
 
+/** A first session begun from the empty screen: the project of its folder is opened as soon as its record is read,
+ *  and then its talk. wake: asks again at once. */
+let began: { session: string; cwd: string; at: number } | null = null;
+let wake = () => {};
+
+/** The project a folder is in: of those whose folder holds it, the one whose folder lies nearest above it. */
+function projectOfFolder(folder: string, projects: Project[]): Project | undefined {
+  let found: Project | undefined;
+  let depth = -1;
+  for (const one of projects) for (const root of one.roots) if (under(folder, root) && root.length > depth) { found = one; depth = root.length; }
+  return found;
+}
+
 /** Where the server looked for a client's records, when it found no session there. */
 interface Looked { client: Client; path: string; there: boolean }
 
@@ -298,7 +313,9 @@ interface Looked { client: Client; path: string; there: boolean }
 function showNone(looked: Looked[] | null) {
   el<HTMLElement>("none").hidden = looked === null;
   el<HTMLElement>("legend").hidden = looked !== null; // no lines to read the marks of
-  for (const id of ["new-session", "new-float"]) el<HTMLButtonElement>(id).disabled = looked !== null; // a new session begins in a project's folder
+  // with no project, a new session is the first one, begun in a folder chosen in its window
+  const can = state.clients.codex || state.clients.claude;
+  for (const id of ["new-session", "new-float"]) el<HTMLButtonElement>(id).disabled = looked !== null && !can;
   if (looked === null) return;
   const button = el<HTMLButtonElement>("project");
   button.textContent = "프로젝트 없음";
@@ -312,9 +329,13 @@ function showNone(looked: Looked[] | null) {
   }
   const elsewhere = h("p");
   elsewhere.append("기록이 다른 곳에 있으면 서버를 띄울 때 ", code("CONTEXT_FLOW_CODEX_HOME"), "이나 ", code("CONTEXT_FLOW_CLAUDE_HOME"), "으로 알려 줍니다. 먼저 둘러보려면 저장소 폴더에서 ", code("npm run demo"), "를 돌립니다.");
+  const start = h("button", "none-start", "폴더를 골라 첫 세션 시작");
+  start.type = "button";
+  start.onclick = openNew;
   el<HTMLElement>("none").replaceChildren(
     h("h2", "", "아직 읽을 세션이 없습니다"),
-    h("p", "", "Codex나 Claude Code로 아무 폴더에서 세션을 하나 돌리면 그 폴더가 여기 프로젝트로 나옵니다. 이 화면은 그때 저절로 이어집니다."),
+    h("p", "", "Codex나 Claude Code로 아무 폴더에서 세션을 하나 돌리면 그 폴더가 여기 프로젝트로 나옵니다. 여기서 폴더를 골라 첫 세션을 시작해도 됩니다. 이 화면은 그때 저절로 이어집니다."),
+    can ? start : h("p", "", "다만 이 컴퓨터에서 Codex도 Claude Code도 찾지 못했습니다. 둘 가운데 하나를 설치하면 여기서 시작할 수 있습니다."),
     h("p", "none-head", "찾아본 곳"),
     where,
     elsewhere,
@@ -740,7 +761,11 @@ function wireApp(close: () => void) {
   act.openNew = openNew;
   act.openElsewhere = (id, session, item, span) => void openElsewhere(id, session, item, span);
   act.addProject = (id) => withProject(id, true);
-  act.refresh = () => load(project, "again").catch(() => {});
+  act.refresh = () => (project ? load(project, "again").catch(() => {}) : Promise.resolve()); // with no project yet there is nothing to read again
+  act.began = (session, cwd) => {
+    began = { session, cwd, at: Date.now() };
+    wake();
+  };
   // when the server stops answering, the screen says so and keeps trying; what was read stays on it meanwhile
   net.changed = () => { el<HTMLElement>("offline").hidden = !net.down; };
   el<HTMLElement>("retry").onclick = () => { if (project) void load(project, "again").catch(() => {}); };
@@ -867,9 +892,13 @@ function wireApp(close: () => void) {
     const named = (name: string) => projects.find((one) => one.id === name || one.name === name || one.roots.includes(name));
     const whole = named(wanted);
     const asked = whole ? [whole] : [...new Set(wanted.split(",").map((part) => named(part.trim())).filter((one): one is Project => Boolean(one)))];
-    const first = asked.length ? asked : projects.slice(0, 1);
+    // a first session begun here: the project its folder is in, once its record is read (a session that wrote none
+    // in a minute is waited for no longer)
+    const theirs = began ? projectOfFolder(began.cwd, projects) : undefined;
+    if (began && !theirs && Date.now() - began.at > 60_000) began = null;
+    const first = theirs ? [theirs] : began ? [] : asked.length ? asked : projects.slice(0, 1);
     if (!first.length) {
-      showNone(looked ?? []);
+      if (!projects.length) showNone(looked ?? []);
       return false;
     }
     showNone(null);
@@ -877,6 +906,11 @@ function wireApp(close: () => void) {
     drawPicker();
     await load(chosen.join(","));
     remember();
+    if (began) {
+      const id = began.session;
+      began = null;
+      void sessionSeen(id).then((found) => { if (found) openChat(id); });
+    }
     return true;
   };
   for (;;) {
@@ -885,7 +919,11 @@ function wireApp(close: () => void) {
     } catch (error) {
       if (state.alone || !net.down) throw error;
     }
-    await new Promise((resolve) => window.setTimeout(resolve, 4000));
+    // asked again a little later; soon after a first session was begun here, and at once when it was just begun
+    await new Promise<void>((resolve) => {
+      wake = resolve;
+      window.setTimeout(resolve, began ? 1000 : 4000);
+    });
   }
   let timer = 0;
   window.addEventListener("resize", () => { clearTimeout(timer); timer = window.setTimeout(render, 120); });

@@ -11,6 +11,7 @@ import { HOME } from "./home.ts";
 import { claudeHome, stoodBefore } from "./claude.ts";
 import { codexHome, forkPoint, ownRecords } from "./codex.ts";
 import { makeBundle, maskBundle, type Spot } from "./bundle.ts";
+import { folderNamed, foldersIn, nearTrees } from "./folders.ts";
 import { freshPlan } from "./fresh.ts";
 import { filesIn, filesNote, pieceBlock, withBlocks } from "./links.ts";
 import type { Client, Place, Project, Session, Transfer } from "./model.ts";
@@ -244,21 +245,34 @@ export function serve(port: number, webDir: string): Served {
           const client: Client | null = asked.client === "codex" || asked.client === "claude" ? asked.client : null;
           if (!client) return send(400, { error: "어느 클라이언트로 시작할지 정해 주세요" });
           if (!text) return send(400, { error: "새 세션에 처음 할 말을 적어 주세요" });
-          const made = await read(String(asked.project ?? ""));
-          if (!made) return send(404, { error: "그런 프로젝트가 없습니다" });
           const now = Date.now();
-          const plan = freshPlan(made.snapshot.project, made.snapshot.sessions, {
-            client, from: String(picked[0]?.sessionId ?? ""),
-            cwd: typeof asked.cwd === "string" && asked.cwd ? asked.cwd : undefined,
-            like: typeof asked.like === "string" && asked.like ? asked.like : undefined,
-          });
-          if ("error" in plan) return send(400, { error: plan.error });
-          const { cwd, like } = plan;
-          if (!existsSync(cwd)) return send(400, { error: "새 세션이 일할 폴더가 없습니다: " + cwd });
-          // with several projects on the map, the new session is of the one whose folder it is begun in
-          const into = nearestProject(cwd, made.snapshot.projects ?? [made.snapshot.project]);
-          const pieces = await cut(read, made, picked, { sessionId: "", where: placeOf(made, { projectId: null, title: oneLine(text, 80), client }, into) }, now);
-          if (!pieces) return send(400, { error: "붙인 조각을 기록에서 찾지 못했습니다. 기록을 다시 읽은 뒤 담아 주세요" });
+          let begun: { cwd: string; like: Session | null; pieces: Cut[] };
+          if (!asked.project) {
+            // The first session of all, begun in a folder the person chose before there is a project to begin it in:
+            // with no pieces (there is no session yet to cut them from) and its client's own defaults. Its folder is a
+            // project once the session has written its record (projects.ts).
+            const cwd = folderNamed(asked.cwd);
+            if (!cwd) return send(400, { error: "그런 폴더가 없습니다: " + String(asked.cwd ?? "") });
+            if (cwd === "/") return send(400, { error: "맨 위 폴더에서는 시작하지 않습니다. 일할 폴더를 골라 주세요" });
+            if (picked.length) return send(400, { error: "첫 세션에는 조각을 붙일 수 없습니다" });
+            begun = { cwd, like: null, pieces: [] };
+          } else {
+            const made = await read(String(asked.project));
+            if (!made) return send(404, { error: "그런 프로젝트가 없습니다" });
+            const plan = freshPlan(made.snapshot.project, made.snapshot.sessions, {
+              client, from: String(picked[0]?.sessionId ?? ""),
+              cwd: typeof asked.cwd === "string" && asked.cwd ? asked.cwd : undefined,
+              like: typeof asked.like === "string" && asked.like ? asked.like : undefined,
+            });
+            if ("error" in plan) return send(400, { error: plan.error });
+            if (!existsSync(plan.cwd)) return send(400, { error: "새 세션이 일할 폴더가 없습니다: " + plan.cwd });
+            // with several projects on the map, the new session is of the one whose folder it is begun in
+            const into = nearestProject(plan.cwd, made.snapshot.projects ?? [made.snapshot.project]);
+            const pieces = await cut(read, made, picked, { sessionId: "", where: placeOf(made, { projectId: null, title: oneLine(text, 80), client }, into) }, now);
+            if (!pieces) return send(400, { error: "붙인 조각을 기록에서 찾지 못했습니다. 기록을 다시 읽은 뒤 담아 주세요" });
+            begun = { cwd: plan.cwd, like: plan.like, pieces };
+          }
+          const { cwd, like, pieces } = begun;
           let more: ReturnType<typeof alongOf>;
           try {
             more = alongOf(asked);
@@ -371,6 +385,14 @@ export function serve(port: number, webDir: string): Served {
       }
       if (request.method !== "GET") return send(405, { error: "받지 않는 요청입니다" });
       if (url.pathname === "/api/basket") return send(200, { pieces: readBasket() });
+      if (url.pathname === "/api/folders") {
+        // The folders in one, for choosing where a first session is begun: from the home folder unless another is
+        // asked for. Asked for the home folder, the git work trees near it are named too.
+        const asked = url.searchParams.get("path");
+        const path = folderNamed(asked || "~");
+        if (!path) return send(400, { error: "그런 폴더가 없습니다: " + asked });
+        return send(200, { ...foldersIn(path), ...(asked ? {} : { near: nearTrees() }) });
+      }
       if (url.pathname === "/api/models") {
         // What a client offers to answer with, for the box in which the model of a session's next message is chosen.
         const client = url.searchParams.get("client");

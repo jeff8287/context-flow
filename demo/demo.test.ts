@@ -4,8 +4,8 @@
 // disturbed. (Not to the system's temporary folder: the tool takes files there for scratch notes, not shared work.)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, rmSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Snapshot } from "../packages/core/src/model.ts";
@@ -332,6 +332,49 @@ test("a talk that went one way and then another is given with what was left behi
     assert.deepEqual(back.steps.filter((step) => step.dir === "back").map((step) => step.link.id), [arrived.id]);
     assert.equal(back.left[behind.id]?.kind, "answer");
   } finally {
+    await served.close();
+  }
+});
+
+test("with no project to begin it in, a first session is begun in a folder the person chose, and that folder is then a project", { skip }, async () => {
+  useDemoHomes();
+  useStandIns();
+  process.env.CONTEXT_FLOW_PROJECTS = "folders"; // as where the Codex app has no projects: the folders the sessions worked in are
+  const served = serve(0, join(ROOT, "packages", "web", "dist"));
+  const at = "http://127.0.0.1:" + (await served.ready);
+  const get = async (path: string) => (await (await fetch(at + path)).json()) as Record<string, any>;
+  const post = async (path: string, payload: unknown) => {
+    const got = await fetch(at + path, { method: "POST", headers: { "content-type": "application/json", origin: at }, body: JSON.stringify(payload) });
+    return { status: got.status, body: (await got.json()) as Record<string, any> };
+  };
+  const folder = join(home, "work", "first-try");
+  mkdirSync(join(folder, ".git"), { recursive: true });
+  mkdirSync(join(folder, "src"), { recursive: true });
+  try {
+    // the folder as the window shows it: what is in it, whether it is a git work tree, and which folder is the
+    // project of a session begun there (the work tree it lies in)
+    const top = await get("/api/folders?path=" + encodeURIComponent(folder));
+    assert.deepEqual([top.git, top.folders.map((one: { path: string; git: boolean }) => [basename(one.path), one.git])], [true, [["src", false]]]);
+    const inner = await get("/api/folders?path=" + encodeURIComponent(join(folder, "src")));
+    assert.deepEqual([inner.git, inner.up, inner.project], [false, folder, top.shown]);
+    assert.equal((await fetch(at + "/api/folders?path=" + encodeURIComponent(join(folder, "nowhere")))).status, 400);
+    // the top folder, a folder that is not there, and pieces (there is no session yet to cut them from) are refused
+    for (const [cwd, pieces] of [["/", []], [join(folder, "nowhere"), []], [folder, [{ sessionId: SESSIONS.tests.id, itemId: "x", start: 0, end: 1 }]]] as const) {
+      assert.equal((await post("/api/new", { client: "claude", text: "x", cwd, pieces })).status, 400);
+    }
+    for (const [client, cwd] of [["claude", folder], ["codex", join(folder, "src")]] as const) {
+      const begun = await post("/api/new", { client, text: "첫 세션 시험", cwd });
+      assert.equal(begun.status, 200, JSON.stringify(begun.body));
+      assert.equal(begun.body.cwd, cwd);
+      for (let tries = 0; tries < 40 && (await get("/api/turn/active?session=" + begun.body.session)).turn; tries += 1) await new Promise((resolve) => setTimeout(resolve, 250));
+      // the work tree is a project of its own, and the session is in it
+      const project = (await get("/api/projects")).projects.find((one: { roots: string[] }) => one.roots.join() === folder);
+      assert.ok(project, "the folder is a project");
+      const session = (await get("/api/snapshot?project=" + encodeURIComponent(project.id))).sessions.find((one: { id: string }) => one.id === begun.body.session);
+      assert.deepEqual([session?.client, session?.cwd], [client, cwd]);
+    }
+  } finally {
+    delete process.env.CONTEXT_FLOW_PROJECTS;
     await served.close();
   }
 });

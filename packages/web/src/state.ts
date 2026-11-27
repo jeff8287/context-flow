@@ -94,6 +94,8 @@ export const act = {
   hover: (_id: string | null) => {},
   /** Read the project's records again, keeping what is on and what is open. */
   refresh: async () => {},
+  /** A first session was begun in a folder from the empty screen: open the map of its project, and its talk, once its record is read. */
+  began: (_session: string, _cwd: string) => {},
   /** Show what went along a line of the map; with no other end, a session's own context. */
   openEdge: (_from: string, _to: string | null) => {},
   /** Follow a piece both ways and show the way; text: the piece, or the beginning of it, to head the way with. */
