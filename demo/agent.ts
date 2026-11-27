@@ -94,7 +94,8 @@ const claudeChanged = (change: { path: string; after: string; added: string }) =
 const claudeAnswered = (text: string, model = MODEL.claude) => [{ type: "assistant", message: { role: "assistant", model, stop_reason: "end_turn", content: [{ type: "text", text }] } }];
 
 function threads(): DatabaseSync {
-  const db = new DatabaseSync(join(CODEX, "state_5.sqlite"));
+  // the screen's server reads this list at any moment: a write waits for that reading to end instead of failing
+  const db = new DatabaseSync(join(CODEX, "state_5.sqlite"), { timeout: 5000 });
   db.exec(THREADS);
   return db;
 }
