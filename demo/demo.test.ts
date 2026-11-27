@@ -4,7 +4,7 @@
 // disturbed. (Not to the system's temporary folder: the tool takes files there for scratch notes, not shared work.)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ import type { Snapshot } from "../packages/core/src/model.ts";
 const home = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), "home-test-"));
 process.env.CONTEXT_FLOW_DEMO_HOME = home; // read by world.ts when it is loaded, and by the agent this starts
 const { make, unfit } = await import("./make.ts");
-const { PROJECTS, ROOT, SESSIONS, rolloutPath, useDemoHomes, useStandIns } = await import("./world.ts");
+const { FLOW, PROJECTS, ROOT, SESSIONS, rolloutPath, useDemoHomes, useStandIns } = await import("./world.ts");
 const { serve } = await import("../packages/core/src/server.ts");
 const { pieceBlock } = await import("../packages/core/src/links.ts");
 const { noLive } = await import("../packages/core/src/live.ts");
@@ -375,6 +375,57 @@ test("with no project to begin it in, a first session is begun in a folder the p
     }
   } finally {
     delete process.env.CONTEXT_FLOW_PROJECTS;
+    await served.close();
+  }
+});
+
+test("from a map, a session is begun in a folder outside its projects, chosen from the disk: of the project that folder is in, or of a project of its own from then on", { skip }, async () => {
+  useDemoHomes();
+  useStandIns();
+  const served = serve(0, join(ROOT, "packages", "web", "dist"));
+  const at = "http://127.0.0.1:" + (await served.ready);
+  const get = async (path: string) => (await (await fetch(at + path)).json()) as Record<string, any>;
+  const post = async (path: string, payload: unknown) => {
+    const got = await fetch(at + path, { method: "POST", headers: { "content-type": "application/json", origin: at }, body: JSON.stringify(payload) });
+    return { status: got.status, body: (await got.json()) as Record<string, any> };
+  };
+  const done = async (session: string) => {
+    for (let tries = 0; tries < 40 && (await get("/api/turn/active?session=" + session)).turn; tries += 1) await new Promise((resolve) => setTimeout(resolve, 250));
+  };
+  const made = join(home, "work", "new-repo"); // a repository just made, in no project of the sidebar
+  mkdirSync(join(made, ".git"), { recursive: true });
+  mkdirSync(join(made, "src"), { recursive: true });
+  try {
+    // the window is told which project there is already that a folder is of, and of none for the new repository
+    assert.deepEqual((await get("/api/folders?path=" + encodeURIComponent(PROJECTS.web.root))).of, { id: PROJECTS.web.id, name: PROJECTS.web.name });
+    const top = await get("/api/folders?path=" + encodeURIComponent(made) + "&near=1");
+    assert.deepEqual([top.of, top.git, Array.isArray(top.near)], [undefined, true, true]);
+    // the top folder, and a folder that is not there, are refused
+    for (const cwd of ["/", join(made, "nowhere")]) assert.equal((await post("/api/new", { project: PROJECTS.api.id, client: "claude", text: "x", cwd })).status, 400);
+    // a folder of another project of the sidebar: the session is that project's, and nothing is kept
+    const there = await post("/api/new", { project: PROJECTS.api.id, client: "codex", text: "다른 프로젝트 폴더에서", cwd: PROJECTS.web.root });
+    assert.equal(there.status, 200, JSON.stringify(there.body));
+    assert.equal(there.body.project?.id, PROJECTS.web.id);
+    await done(there.body.session);
+    // the new repository, with a piece of this map along: the session is of a project of its own, its work tree
+    const snap = await get("/api/snapshot?project=" + PROJECTS.api.id);
+    const answer = (snap.items as { id: string; sessionId: string; kind: string; size: number }[]).find((item) => item.sessionId === SESSIONS.tests.id && item.kind === "answer")!;
+    const piece = { sessionId: answer.sessionId, itemId: answer.id, start: 0, end: Math.min(40, answer.size) };
+    const begun = await post("/api/new", { project: PROJECTS.api.id, client: "claude", text: "새 저장소에서 시작", cwd: join(made, "src"), pieces: [piece] });
+    assert.equal(begun.status, 200, JSON.stringify(begun.body));
+    assert.deepEqual([begun.body.cwd, begun.body.project?.roots, /^dir-/.test(begun.body.project?.id)], [join(made, "src"), [made], true]);
+    await done(begun.body.session);
+    // it is kept, and is a project beside the sidebar's from then on
+    assert.deepEqual((JSON.parse(readFileSync(join(FLOW, "folders.json"), "utf8")) as { root: string }[]).map((one) => one.root), [made]);
+    const listed = await get("/api/projects");
+    assert.deepEqual([listed.from, listed.projects.map((one: { id: string }) => one.id)], ["sidebar", [PROJECTS.api.id, PROJECTS.web.id, begun.body.project.id]]);
+    // put on the map beside the one it was begun from, the session is in it, with the line of the piece it was given
+    const both = await get("/api/snapshot?project=" + PROJECTS.api.id + "," + begun.body.project.id);
+    const session = both.sessions.find((one: { id: string }) => one.id === begun.body.session);
+    assert.deepEqual([session?.projectId, session?.cwd], [begun.body.project.id, join(made, "src")]);
+    assert.ok(both.links.some((link: { kind: string; from: { itemId: string }; to: { sessionId: string } }) => link.kind === "transfer" && link.from.itemId === answer.id && link.to.sessionId === begun.body.session));
+  } finally {
+    rmSync(join(FLOW, "folders.json"), { force: true });
     await served.close();
   }
 });

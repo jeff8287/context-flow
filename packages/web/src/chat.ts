@@ -8,12 +8,12 @@
 // dragged onto the empty map it begins a session (drag.ts). The pane also shows where a new session is begun.
 // A request can be said again, in other words or the same: the session it was said in is not changed, and what is
 // sent goes to a fork of that session as it stood before the request.
-import type { Client, FarLink, Item, Link, Session, TraceStep, TurnEvent, Waiting } from "../../core/src/model.ts";
+import type { Client, FarLink, Item, Link, Project, Session, TraceStep, TurnEvent, Waiting } from "../../core/src/model.ts";
 import type { Folder, Folders } from "../../core/src/folders.ts";
 import { freshPlan } from "../../core/src/fresh.ts";
 import { filesIn, withoutPieces } from "../../core/src/links.ts";
 import { carries, onLanding, press, type Spec } from "./drag.ts";
-import { act, afar, call, CLIENT, clock, colorOf, day, el, flowLabel, h, hookTrouble, ICON, keepBasket, KIND, LINK, many, owner, placeOf, post, projectOf, projName, state, stateWord, top, whose, type Held, type Span } from "./state.ts";
+import { act, afar, call, CLIENT, clock, colorOf, day, el, flowLabel, h, hookTrouble, ICON, keepBasket, KIND, LINK, many, owner, placeOf, post, projectOf, projectsOn, projName, state, stateWord, top, whose, type Held, type Span } from "./state.ts";
 
 type Said = Item & { more?: number };
 const TICK = String.fromCharCode(96);
@@ -1810,20 +1810,25 @@ export function drawTrace() {
 let starting = false;
 /** A first session begun from this window (its id): its answer is shown here until the map of its project opens. */
 let begunFirst: string | null = null;
-/** Choosing the folder of a first session, while there is no project to begin it in: the folder looked into (it is
- *  the one chosen), the git work trees found near the home folder, and what went wrong when a folder was asked for. */
+/** Choosing a folder from the disk: for a first session, while there is no project to begin it in, or for a session
+ *  outside the projects on the map ('다른 폴더…'). The folder looked into (it is the one chosen), the git work trees
+ *  found near the home folder, what went wrong when a folder was asked for, and the window it was all for. */
 let browsing: Folders | null = null;
 let nearHome: Folder[] = [];
 let browseError = "";
+let browseFor: object | null = null;
+/** The last choice of the folder box: a folder of its own, from the disk. */
+const OTHER = "…other";
 const UP = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15.5v-11M5.5 9 10 4.5 14.5 9"/></svg>';
 
-/** Look into a folder for a first session (the home folder, with the git work trees near it, when none is named), and
- *  make it the one chosen. */
-async function goFolder(path?: string) {
+/** Look into a folder (the home folder when none is named) and make it the one chosen. near: name the git work trees
+ *  near the home folder too, as is done when the home folder is looked into. */
+async function goFolder(path?: string, near = false) {
   const fresh = state.fresh;
   if (!fresh) return;
   try {
-    const got = await call<Folders & { near?: Folder[] }>("/api/folders" + (path ? "?path=" + encodeURIComponent(path) : ""));
+    const query = [path ? "path=" + encodeURIComponent(path) : "", near ? "near=1" : ""].filter(Boolean).join("&");
+    const got = await call<Folders & { near?: Folder[] }>("/api/folders" + (query ? "?" + query : ""));
     if (state.fresh !== fresh) return;
     if (got.near) nearHome = got.near;
     browsing = got;
@@ -1860,10 +1865,13 @@ function drawFolders() {
   bar.append(up, path);
   const parts: HTMLElement[] = [bar];
   if (browseError) parts.push(h("p", "browse-error", browseError));
-  if (nearHome.length) {
+  // (the projects on the map are not offered again: their folders are in the box above)
+  const roots = new Set(projectsOn().flatMap((one) => one.roots));
+  const chips = nearHome.filter((one) => !roots.has(one.path));
+  if (chips.length) {
     const near = h("div", "browse-near");
     near.append(h("span", "", "가까운 git 저장소"));
-    for (const one of nearHome) {
+    for (const one of chips) {
       const chip = h("button", "browse-chip" + (one.path === browsing?.path ? " on" : ""), one.path.split("/").pop() || one.shown);
       chip.type = "button";
       chip.title = one.shown;
@@ -1887,8 +1895,14 @@ function drawFolders() {
   if (browsing?.more) list.append(h("p", "browse-none", "폴더 " + browsing.more + "개는 목록에 다 싣지 않았습니다. 경로를 적어 가 주세요."));
   parts.push(list);
   if (browsing) {
-    // which folder will be the project: a session's project is the git work tree it works in, or its own folder
-    const where = browsing.git ? "git 저장소라 이 폴더가 프로젝트가 됩니다." : browsing.project !== browsing.shown ? "git 저장소 " + browsing.project + " 안이라 그 저장소가 프로젝트가 됩니다." : "git 저장소가 아니어서 이 폴더가 그대로 프로젝트가 됩니다.";
+    // which folder will be the project: a session's project is the git work tree it works in, or its own folder;
+    // with a map open, the project there is already that the folder is in, which then comes on the map
+    const of = state.snap ? browsing.of : undefined;
+    const own = browsing.git ? "git 저장소라 이 폴더가" : browsing.project !== browsing.shown ? "git 저장소 " + browsing.project + " 안이라 그 저장소가" : "git 저장소가 아니어서 이 폴더가 그대로";
+    const where = !state.snap ? own + " 프로젝트가 됩니다."
+      : of && projectsOn().some((one) => one.id === of.id) ? "지도에 있는 프로젝트 " + of.name + "의 폴더입니다."
+      : of ? "프로젝트 " + of.name + "의 폴더라 그 프로젝트를 지도에 함께 올립니다."
+      : own + " 새 프로젝트가 되어 지도에 함께 올라갑니다.";
     parts.push(h("p", "browse-here", browsing.shown + "에서 시작합니다. " + where));
   }
   box.replaceChildren(...parts);
@@ -1899,7 +1913,7 @@ const home = (id: string) => owner(id)?.id ?? id;
 function freshWay() {
   const fresh = state.fresh!;
   const first = state.basket.find((piece) => state.attached.has(piece.id));
-  const ask = (choice: { cwd?: string; like?: string }) => freshPlan(state.snap!.project, state.snap!.sessions, { client: fresh.client, from: first?.sessionId, ...choice });
+  const ask = (choice: { cwd?: string; like?: string }) => freshPlan(state.snap!.project, state.snap!.sessions, { client: fresh.client, from: first?.sessionId, anywhere: fresh.away, ...choice });
   let plan = ask({ cwd: fresh.cwd, like: fresh.like });
   if ("error" in plan) {
     // what was chosen no longer holds (the session it named is gone): back to what is worked out
@@ -1908,6 +1922,14 @@ function freshWay() {
     plan = ask({});
   }
   return "error" in plan ? null : plan;
+}
+/** The folder the project's own folder is in (that of the folder the new session would work in), where the folders
+ *  beside it are. */
+function besideProject(): string | undefined {
+  const roots = projectsOn().flatMap((one) => one.roots);
+  const cwd = freshWay()?.cwd ?? "";
+  const root = roots.find((one) => cwd === one || cwd.startsWith(one + "/")) ?? roots[0];
+  return root ? root.slice(0, root.lastIndexOf("/")) || "/" : undefined;
 }
 /** A folder as it reads from the project's own: the project's name, then the way down. */
 function folderName(path: string): string {
@@ -1927,14 +1949,17 @@ function tuneNew() {
   // with no project yet it is the first session, begun in the folder chosen in this window
   const first = !state.snap;
   const held = starting || Boolean(begunFirst);
-  go.disabled = held || !box.value.trim() || !state.clients[fresh.client] || (first && !browsing);
+  go.disabled = held || !box.value.trim() || !state.clients[fresh.client] || ((first || Boolean(fresh.away)) && !browsing);
   box.disabled = held;
   if (begunFirst) box.placeholder = "첫 세션을 시작했습니다. 기록이 읽히면 지도와 대화가 열립니다";
   const clip = pane().querySelector<HTMLButtonElement>(".composer .clip");
   if (clip) clip.disabled = held;
   const plan = first ? null : freshWay();
   const where = pane().querySelector<HTMLElement>(".fresh-where");
-  if (where && plan) {
+  if (where && plan && fresh.away && browsing) {
+    where.textContent = CLIENT[fresh.client] + " · " + browsing.shown + "에서 시작";
+    where.title = browsing.path;
+  } else if (where && plan) {
     where.textContent = CLIENT[fresh.client] + " · " + folderName(plan.cwd) + "에서 시작";
     where.title = plan.cwd;
   } else if (where && first && browsing) {
@@ -1946,14 +1971,18 @@ function tuneNew() {
   const model = pane().querySelector<HTMLSelectElement>(".fresh-model");
   if (plan && folder && model) {
     const option = (value: string, label: string, tip: string) => { const made = h("option", "", label); made.value = value; made.title = tip; return made; };
-    folder.replaceChildren(...[...new Set([plan.cwd, ...plan.folders])].sort().map((path) => option(path, folderName(path), path)));
-    folder.value = plan.cwd;
+    // the project's folders, and last a folder from the disk: one that is in no project is then a project of its own
+    const own = [...new Set([...(fresh.away ? [] : [plan.cwd]), ...plan.folders])].sort().map((path) => option(path, folderName(path), path));
+    folder.replaceChildren(...own, option(OTHER, "다른 폴더…", "디스크에서 폴더를 골라 그곳에서 시작합니다. 어느 프로젝트에도 없는 폴더(새 저장소 같은)는 새 프로젝트로 지도에 함께 올라갑니다"));
+    folder.value = fresh.away ? OTHER : plan.cwd;
     folder.disabled = starting;
     const likes = plan.like && !plan.likes.some((one) => one.id === plan.like!.id) ? [plan.like, ...plan.likes] : plan.likes;
     model.replaceChildren(...likes.map((one) => option(one.id, one.model ?? "(모델 표시 없음)", "‘" + one.title + "’처럼: 그 세션의 모델과 권한")), option("none", CLIENT[fresh.client] + " 기본 설정", "따르는 세션 없이, 그 클라이언트의 기본 모델과 권한으로"));
     model.value = plan.like?.id ?? "none";
     model.disabled = starting;
   }
+  const browse = pane().querySelector<HTMLElement>(".browse");
+  if (browse && !first) browse.hidden = !fresh.away;
   const note = pane().querySelector<HTMLElement>(".fresh-note");
   if (note) note.textContent = !state.clients[fresh.client] ? "이 컴퓨터에서 " + CLIENT[fresh.client] + "를 찾지 못해 시작할 수 없습니다." : plan?.like ? "모델과 권한(승인, 샌드박스)은 ‘" + flat(plan.like.title, 28) + "’ 세션을 따릅니다." : CLIENT[fresh.client] + "의 기본 모델과 권한으로 시작합니다.";
   pane().querySelectorAll<HTMLElement>(".client").forEach((one) => one.classList.toggle("on", one.dataset.client === fresh.client));
@@ -2013,7 +2042,7 @@ async function startNew() {
     const asked = first
       ? { client: fresh.client, text, cwd: fresh.cwd, ...(files.length ? { files } : {}) }
       : { project: state.snap!.project.id, client: fresh.client, text, pieces, cwd: plan?.cwd, like: plan ? plan.like?.id ?? "none" : undefined, ...(files.length ? { files } : {}) };
-    const made = await post<{ turn: string; session: string; cwd: string }>("/api/new", asked);
+    const made = await post<{ turn: string; session: string; cwd: string; project?: Project }>("/api/new", asked);
     box.value = "";
     picked = [];
     sent = { session: made.session, text, pieces: [], files: going, taken: false };
@@ -2029,6 +2058,9 @@ async function startNew() {
     state.attached.clear();
     for (const piece of along) state.on.add(home(piece.sessionId)); // so that the line to the new session is on the map
     drawBasket();
+    // begun in a folder of a project that is not on the map (another one, or one of its own just made): that project
+    // comes on the map beside what is there, so that the session can be seen on it
+    if (made.project && !projectsOn().some((one) => one.id === made.project!.id)) await act.addProject(made.project.id);
     const found = await seen(made.session);
     starting = false;
     if (found) state.on.add(made.session);
@@ -2058,6 +2090,13 @@ export function drawNew() {
   // with no project yet it is the first session: its folder is chosen here from the disk
   const first = !state.snap;
   begunFirst = null;
+  if (browseFor !== fresh) {
+    // another window: what was looked into for the last one is not what this one chose
+    browseFor = fresh;
+    browsing = null;
+    nearHome = [];
+    browseError = "";
+  }
   box.hidden = false;
   box.classList.remove("ctx-on", "no-send");
   box.style.setProperty("--c", "var(--ink)");
@@ -2103,11 +2142,22 @@ export function drawNew() {
     return field;
   };
   ways.append(
-    choose("fresh-folder", "폴더", "새 세션이 일할 폴더. 고르지 않으면 첫 조각이 나온 세션의 폴더입니다", (value) => { fresh.cwd = value; fresh.like = undefined; }),
+    choose("fresh-folder", "폴더", "새 세션이 일할 폴더. 고르지 않으면 첫 조각이 나온 세션의 폴더입니다", (value) => {
+      fresh.like = undefined;
+      if (value !== OTHER) {
+        fresh.away = false;
+        fresh.cwd = value;
+        return;
+      }
+      // a folder from the disk: where it was looked for last in this window, or else beside the project's own folder
+      // (a repository just made is often there), with the git work trees near the home folder
+      fresh.away = true;
+      void (browsing ? goFolder(browsing.path) : goFolder(besideProject(), true));
+    }),
     choose("fresh-model", "모델", "새 세션의 모델. 고른 모델을 쓰던 세션의 권한도 함께 따릅니다", (value) => { fresh.like = value; }),
   );
   if (first) body.append(pick, h("div", "browse"), h("p", "fresh-note", ""));
-  else body.append(pick, ways, h("p", "fresh-note", ""), h("div", "fresh-pieces"));
+  else body.append(pick, ways, h("div", "browse"), h("p", "fresh-note", ""), h("div", "fresh-pieces"));
   const form = h("form", "composer");
   const basket = h("div", "basket");
   const row = h("div", "composer-row");
@@ -2139,6 +2189,9 @@ export function drawNew() {
   if (first) {
     drawFolders();
     void goFolder(state.fresh?.cwd); // where it was left, or the home folder
+  } else if (fresh.away) {
+    drawFolders();
+    void goFolder(fresh.cwd);
   }
   tune();
   input.focus();

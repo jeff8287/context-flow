@@ -3,8 +3,10 @@
 import type { Client, Project, Session } from "./model.ts";
 import { within } from "./util.ts";
 
-/** What the person chose, if anything. from: the session the first piece came from. like: a session's id, or "none" for the client's own defaults. */
-export interface FreshChoice { client: Client; cwd?: string; like?: string; from?: string }
+/** What the person chose, if anything. from: the session the first piece came from. like: a session's id, or "none"
+ *  for the client's own defaults. anywhere: the folder may lie outside the project, for it was chosen from the disk
+ *  ('다른 폴더…'): the session is then of the project that folder is in, or of one of its own (server.ts). */
+export interface FreshChoice { client: Client; cwd?: string; like?: string; from?: string; anywhere?: boolean }
 export interface FreshPlan {
   /** The folder it works in. */
   cwd: string;
@@ -23,7 +25,7 @@ export function freshPlan(project: Project, sessions: Session[], choice: FreshCh
   const recent = sessions.filter(main).sort((a, b) => b.updatedAt - a.updatedAt);
   const folders = [...new Set([...project.roots, ...recent.map((session) => session.cwd).filter(inside)])].slice(0, 12);
   const source = sessions.find((session) => session.id === choice.from);
-  if (choice.cwd && !inside(choice.cwd)) return { error: "새 세션은 이 프로젝트의 폴더 안에서만 시작합니다" };
+  if (choice.cwd && !choice.anywhere && !inside(choice.cwd)) return { error: "새 세션은 이 프로젝트의 폴더 안에서만 시작합니다" };
   const cwd = choice.cwd || (source && inside(source.cwd) ? source.cwd : project.roots[0]);
   if (!cwd) return { error: "새 세션이 일할 폴더를 찾지 못했습니다" };
   const peers = recent.filter((session) => session.client === choice.client);
